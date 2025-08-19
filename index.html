@@ -4,11 +4,86 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Promille Rechner</title>
-  <link rel="manifest" href="manifest.webmanifest">
   <meta name="theme-color" content="#0a84ff">
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 0; padding: 1em; }
+    .danger { background: #b00020; color: #fff; }
+    #warnBox { display:none; padding:1em; margin:1em 0; background:rgba(255,0,0,0.8); color:white; font-weight:bold; }
+  </style>
 </head>
 <body>
   <h1>Promille Rechner</h1>
-  <p>Dies ist eine vereinfachte Version. Gewicht eingeben und Getränke hinzufügen funktioniert.</p>
+
+  <div>
+    <label>Gewicht:
+      <input type="number" id="gewichtInput" min="40" max="200" value="70"> kg
+    </label>
+  </div>
+
+  <div>
+    <label>Getränk:
+      <select id="drinkType">
+        <option value="bier">Bier (5%)</option>
+        <option value="radler">Radler (2.5%)</option>
+      </select>
+    </label>
+    <label>Menge:
+      <select id="drinkSize">
+        <option value="0.3">0,3 L</option>
+        <option value="0.4">0,4 L</option>
+        <option value="0.5" selected>0,5 L</option>
+      </select>
+    </label>
+    <button id="addDrinkBtn">Jetzt getrunken</button>
+    <button id="resetBtn">Zurücksetzen</button>
+  </div>
+
+  <div id="warnBox">Ich trinke, um den Moment zu leben, nicht zu verlieren</div>
+  <h2 id="promilleAnzeige">Aktuelle Promille: 0,00‰</h2>
+
+  <script>
+    const abbau = 0.13; // ‰ pro Stunde
+    let drinks = [];
+
+    function alkoholGramm(type, liter) {
+      const vol = (type === 'bier') ? 0.05 : 0.025;
+      return liter * vol * 0.8 * 1000;
+    }
+
+    function promilleJetzt() {
+      const now = Date.now(), gw = +document.getElementById("gewichtInput").value || 70, r = 0.68;
+      let x = 0;
+      for (const d of drinks) {
+        const h = Math.max(0, (now - d.t) / 36e5);
+        const p = d.g / (gw * r) - h * abbau;
+        x += Math.max(0, p);
+      }
+      return x;
+    }
+
+    function update() {
+      const p = promilleJetzt();
+      document.getElementById("promilleAnzeige").textContent = "Aktuelle Promille: " + p.toFixed(2) + "‰";
+      if (p >= 0.8) {
+        document.body.classList.add("danger");
+        document.getElementById("warnBox").style.display = "block";
+      } else {
+        document.body.classList.remove("danger");
+        document.getElementById("warnBox").style.display = "none";
+      }
+    }
+
+    document.getElementById("addDrinkBtn").onclick = () => {
+      const ty = document.getElementById("drinkType").value;
+      const s = parseFloat(document.getElementById("drinkSize").value);
+      drinks.push({ ty, s, g: alkoholGramm(ty, s), t: Date.now() });
+      update();
+    };
+
+    document.getElementById("resetBtn").onclick = () => {
+      drinks = [];
+      update();
+    };
+  </script>
 </body>
 </html>
