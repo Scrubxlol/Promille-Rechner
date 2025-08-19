@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Promille Rechner (Live)</title>
+  <title>Promille Rechner (Live + Plan)</title>
   <meta name="theme-color" content="#0a84ff">
   <link rel="apple-touch-icon" href="icon-192.png">
   <style>
     :root{
       --bg:#0b0b0b;--card:#151515;--text:#f2f2f2;--muted:#aaa;
       --primary:#0a84ff;--danger:#b00020;--radius:14px;
-      --grid:#444;--axis:#888;--curve:#4dd0e1;--warn:#ff5252
+      --grid:#444;--axis:#888;--curve:#4dd0e1;--warn:#ff5252;--tableRow:#1e1e1e
     }
     @media (prefers-color-scheme: light){
       :root{
         --bg:#f7f7f7;--card:#ffffff;--text:#111;--muted:#666;
-        --grid:#eee;--axis:#666;--curve:#0a84ff;--warn:#ff3333
+        --grid:#eee;--axis:#666;--curve:#0a84ff;--warn:#ff3333;--tableRow:#f2f2f2
       }
     }
     html,body{height:100%}
@@ -24,7 +24,7 @@
       background:var(--bg);color:var(--text);
       padding:env(safe-area-inset-top) 12px calc(12px + env(safe-area-inset-bottom))
     }
-    .wrap{max-width:860px;margin:0 auto}
+    .wrap{max-width:900px;margin:0 auto}
     h1{font-size:1.4rem;margin:8px 4px 10px}
     .card{background:var(--card);border-radius:var(--radius);padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);margin-bottom:12px}
     .row{display:flex;flex-wrap:wrap;gap:8px}
@@ -40,6 +40,12 @@
     body.danger{background:var(--danger)!important;color:#fff}
     canvas{width:100%;height:240px;display:block;border-radius:12px;background:var(--card)}
     .actions{display:flex;gap:8px;flex-wrap:wrap}
+    table{width:100%;border-collapse:collapse;margin-top:8px}
+    th,td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08)}
+    tr:nth-child(odd){background:var(--tableRow)}
+    th{text-align:left}
+    .plan-entry{display:flex;align-items:center;gap:8px;margin-top:8px}
+    .plan-list .entry{display:flex;justify-content:space-between;align-items:center}
   </style>
 </head>
 <body>
@@ -58,7 +64,7 @@
     </div>
   </div>
 
-  <!-- Eingabe -->
+  <!-- Eingabe (jetzt trinken) -->
   <div class="card">
     <div class="row">
       <label>Getränk:
@@ -94,14 +100,53 @@
     <canvas id="chart"></canvas>
     <div class="muted">Aktualisiert automatisch alle 2 Minuten</div>
   </div>
+
+  <!-- Trinkplan (Simulation) -->
+  <div class="card">
+    <b>Trinkplan (Simulation)</b>
+    <div class="plan-entry">
+      <label>Getränk:
+        <select id="planTyp">
+          <option value="bier">Bier (5 %)</option>
+          <option value="radler">Radler (2,5 %)</option>
+          <option value="shot">Shot (40 %)</option>
+        </select>
+      </label>
+      <label>Menge:
+        <select id="planMenge"></select>
+      </label>
+      <label>Start in:
+        <input type="number" id="planStartMin" value="30" step="5" min="0" style="width:90px"> min
+      </label>
+      <label>Dauer:
+        <input type="number" id="planDauerMin" value="30" step="5" min="1" style="width:90px"> min
+      </label>
+      <button id="planAdd">Zum Plan</button>
+    </div>
+
+    <div class="actions" style="margin-top:8px">
+      <label><input type="checkbox" id="planInclude" checked> Plan in Grafik & Tabelle berücksichtigen</label>
+      <button id="planClear" class="ghost">Plan leeren</button>
+    </div>
+
+    <div class="plan-list" id="planList" style="margin-top:8px">
+      <div class="muted" id="planEmpty">Kein geplanter Drink.</div>
+    </div>
+
+    <h4 style="margin-top:12px">Simulation (alle 10 Minuten, 3 Stunden)</h4>
+    <table id="simTable">
+      <thead><tr><th>Zeit</th><th>Promille (‰)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 </div>
 
 <script>
 /* ---------- Parameter ---------- */
-const ABBAU = 0.13;                 // ‰ pro Stunde (Eliminationsrate)
+const ABBAU = 0.13;                 // ‰ pro Stunde
 const R = 0.68;                     // Verteilungsfaktor
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
-const DEFAULT_DAUER_MIN = {         // Standard-Trinkdauer in Minuten
+const DEFAULT_DAUER_MIN = {         // Standard-Trinkdauer
   bier:  { "0.3":25, "0.4":35, "0.5":45 },
   radler:{ "0.3":20, "0.4":28, "0.5":36 },
   shot:  { "0.02":5,  "0.04":8  }
@@ -109,6 +154,7 @@ const DEFAULT_DAUER_MIN = {         // Standard-Trinkdauer in Minuten
 
 /* ---------- State + Storage ---------- */
 let drinks = []; // { ty, s(L), g(Gramm Alc), tStart(ms), tEnd(ms) }
+let plans  = []; // wie oben, aber nur Simulation (nicht gespeichert)
 
 const store = {
   get gewicht(){ return +(localStorage.getItem('pr_weight')||70); },
@@ -139,7 +185,7 @@ function bacContributionAt(t, drink, gewicht){
 
   let bac = 0;
 
-  // Sofort-Anteil: als "eine Minute" zum Startzeitpunkt
+  // Sofort-Anteil
   if (t >= start) {
     const z0 = g0 / (gewicht * R);
     const hours = (t - start) / 3600000;
@@ -151,45 +197,46 @@ function bacContributionAt(t, drink, gewicht){
   const endSlow = start + slowMinutes * 60000;
 
   for (let ts = start; ts < endSlow; ts += 60000) {
-    if (t < ts) continue;                  // noch nicht im Blut
-    const z = perMin / (gewicht * R);      // Promille-Anstieg aus dieser Minute
+    if (t < ts) continue;
+    const z = perMin / (gewicht * R);
     const hours = (t - ts) / 3600000;
-    bac += Math.max(0, z - ABBAU * hours); // Abbau seit Aufnahme
+    bac += Math.max(0, z - ABBAU * hours);
   }
   return bac;
 }
 
-function promilleAt(t){
+function promilleAt(t, arr){
   const gw = +document.getElementById('gewicht').value || 70;
   let sum = 0;
-  for(const d of drinks){ sum += bacContributionAt(t, d, gw); }
+  for(const d of arr){ sum += bacContributionAt(t, d, gw); }
   return sum;
 }
+function promilleJetzt(){
+  const arr = includePlan() ? drinks.concat(plans) : drinks;
+  return promilleAt(Date.now(), arr);
+}
+function includePlan(){ return document.getElementById('planInclude')?.checked; }
 
-function promilleJetzt(){ return promilleAt(Date.now()); }
-
-/* ---------- UI ---------- */
+/* ---------- UI: Jetzt-Drinks ---------- */
 const typSel = document.getElementById('typ');
 const mengeSel = document.getElementById('menge');
 const dauerHinweis = document.getElementById('dauerHinweis');
 
-function fillMengen(){
-  const t = typSel.value;
+function fillMengen(selTyp, selMengeEl){
+  const t = selTyp.value;
+  const el = selMengeEl;
   const opts = (t==='shot')
     ? [{v:'0.02',l:'2 cl'},{v:'0.04',l:'4 cl'}]
     : [{v:'0.3',l:'0,3 L'},{v:'0.4',l:'0,4 L'},{v:'0.5',l:'0,5 L'}];
-  mengeSel.innerHTML = '';
+  el.innerHTML = '';
   opts.forEach(o=>{
-    const el=document.createElement('option');
-    el.value=o.v; el.textContent=o.l; mengeSel.appendChild(el);
+    const opt=document.createElement('option'); opt.value=o.v; opt.textContent=o.l; el.appendChild(opt);
   });
-  // Default-Auswahl
-  if(t==='shot') mengeSel.value='0.02'; else mengeSel.value='0.5';
-  setDauerHint();
+  if(t==='shot') el.value='0.02'; else el.value='0.5';
 }
+
 function setDauerHint(){
   const t=typSel.value, s=mengeSel.value;
-  const d = DEFAULT_DAUER_MIN[t][s] || 45;
   if(t==='shot') dauerHinweis.textContent = (s==='0.02'?'~5 min':'~8 min');
   else dauerHinweis.textContent = '0,3 L ≈ 25 min · 0,4 L ≈ 35 min · 0,5 L ≈ 45 min';
 }
@@ -213,15 +260,6 @@ function updateList(){
   });
 }
 
-function updateUI(){
-  const p = promilleJetzt();
-  document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
-  if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
-  else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
-  updateList();
-  drawChart();
-}
-
 /* ---------- Graph ---------- */
 function drawChart(){
   const cvs = document.getElementById('chart');
@@ -243,76 +281,154 @@ function drawChart(){
   const tMin = now, tMax = now + 6*3600000;
   const xOf = t => PADL + (W-PADL-PADR) * ((t - tMin)/(tMax - tMin));
 
-  // Samples alle 5 Minuten für weiche Kurve
+  // Datensatz wählen: mit/ohne Plan
+  const arr = includePlan() ? drinks.concat(plans) : drinks;
+
+  // Samples alle 5 Minuten
   const points = [];
-  for(let t=tMin; t<=tMax; t+=5*60000){ points.push({t, p: promilleAt(t)}); }
+  for(let t=tMin; t<=tMax; t+=5*60000){ points.push({t, p: promilleAt(t, arr)}); }
 
   const maxP = Math.max(0.8, ...points.map(p=>p.p)) * 1.2 || 1;
   const yOf = p => (H-PADB) - (H-PADT-PADB) * (p / maxP);
 
   // Grid + Achsen
-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim() || '#444';
+  const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  ctx.strokeStyle = css('--grid','#444');
   ctx.lineWidth = 1;
   for(let p=0; p<=maxP; p+=0.2){
     const y=yOf(p); ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(W-PADR,y); ctx.stroke();
   }
-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--axis').trim() || '#888';
+  ctx.strokeStyle = css('--axis','#888');
   ctx.beginPath(); ctx.moveTo(PADL,H-PADB); ctx.lineTo(W-PADR,H-PADB); ctx.lineTo(W-PADR,PADT); ctx.stroke();
 
   // 0.8‰ Linie
-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() || '#ff5252';
-  ctx.setLineDash([4,4]);
+  ctx.strokeStyle = css('--warn','#ff5252'); ctx.setLineDash([4,4]);
   const yWarn = yOf(0.8);
   ctx.beginPath(); ctx.moveTo(PADL,yWarn); ctx.lineTo(W-PADR,yWarn); ctx.stroke();
   ctx.setLineDash([]);
 
   // Kurve
-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--curve').trim() || '#4dd0e1';
+  ctx.strokeStyle = css('--curve','#4dd0e1');
   ctx.lineWidth = 2; ctx.beginPath();
   points.forEach((pt,i)=>{ const x=xOf(pt.t), y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
   ctx.stroke();
 
   // X-Labels stündlich
-  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#aaa';
+  ctx.fillStyle = css('--muted','#aaa');
   ctx.font = '12px -apple-system,system-ui';
   for(let t=tMin; t<=tMax; t+=3600000){
     const x = xOf(t);
     const lab = new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
     ctx.fillText(lab, x-14, H-8);
-    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim() || '#444';
-    ctx.beginPath(); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
+    ctx.beginPath(); ctx.strokeStyle = css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
   }
 
   // Y-Labels
-  ctx.textAlign='right'; ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#aaa';
+  ctx.textAlign='right'; ctx.fillStyle = css('--muted','#aaa');
   for(let p=0; p<=maxP; p+=0.2){ const y=yOf(p); ctx.fillText(p.toFixed(1).replace('.',','), PADL-6, y+4); }
 }
 
-/* ---------- Events ---------- */
+/* ---------- Simulationstabelle ---------- */
+function updateSimTable(){
+  const tbody = document.querySelector('#simTable tbody');
+  tbody.innerHTML = '';
+  const arr = includePlan() ? drinks.concat(plans) : drinks;
+  const start = Date.now();
+  const end = start + 3*3600e3;
+  for(let t = start; t <= end; t += 10*60000){
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td');
+    const td2 = document.createElement('td');
+    td1.textContent = new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    td2.textContent = NF.format(promilleAt(t, arr)) + '‰';
+    tr.appendChild(td1); tr.appendChild(td2);
+    tbody.appendChild(tr);
+  }
+}
+
+/* ---------- Plan-UI ---------- */
+const planTyp = document.getElementById('planTyp');
+const planMenge = document.getElementById('planMenge');
+const planStartMin = document.getElementById('planStartMin');
+const planDauerMin = document.getElementById('planDauerMin');
+
+function fillPlanMengen(){
+  fillMengen(planTyp, planMenge);
+  // Dauer passend setzen
+  const t = planTyp.value, s = planMenge.value;
+  planDauerMin.value = (DEFAULT_DAUER_MIN[t] && DEFAULT_DAUER_MIN[t][s]) || 30;
+}
+planTyp.onchange = ()=>{ fillPlanMengen(); };
+planMenge.onchange = ()=>{ const t=planTyp.value, s=planMenge.value; planDauerMin.value = (DEFAULT_DAUER_MIN[t] && DEFAULT_DAUER_MIN[t][s]) || 30; };
+
+document.getElementById('planAdd').onclick = ()=>{
+  const ty = planTyp.value;
+  const s = parseFloat(planMenge.value);
+  const start = Date.now() + Math.max(0, (+planStartMin.value||0))*60000;
+  const dur = Math.max(1, (+planDauerMin.value||30));
+  const grams = alkoholGramm(ty, s);
+  plans.push({ ty, s, g: grams, tStart: start, tEnd: start + dur*60000 });
+  renderPlanList(); updateUI();
+};
+
+document.getElementById('planClear').onclick = ()=>{ plans = []; renderPlanList(); updateUI(); };
+document.getElementById('planInclude').onchange = ()=>{ updateUI(); };
+
+function renderPlanList(){
+  const box = document.getElementById('planList');
+  const empty = document.getElementById('planEmpty');
+  box.querySelectorAll('.entry').forEach(e=>e.remove());
+  if(!plans.length){ empty.style.display='block'; return; }
+  empty.style.display='none';
+  plans.forEach((p,i)=>{
+    const name = p.ty==='shot' ? (p.s===0.04?'Shot 4 cl':'Shot 2 cl') : `${(p.s).toFixed(1).replace('.',',')} L ${p.ty==='bier'?'Bier':'Radler'}`;
+    const st = new Date(p.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    const du = Math.round((p.tEnd - p.tStart)/60000);
+    const row = document.createElement('div'); row.className='entry';
+    row.innerHTML = `<span>📅 ${st} · ${name} · ${du} min</span><button class="ghost" data-del="${i}">×</button>`;
+    box.appendChild(row);
+  });
+  box.querySelectorAll('button[data-del]').forEach(btn=>{
+    btn.onclick = ()=>{ plans.splice(+btn.dataset.del,1); renderPlanList(); updateUI(); };
+  });
+}
+
+/* ---------- Update-Kaskade ---------- */
+function updateUI(){
+  const p = promilleJetzt();
+  document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
+  if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
+  else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
+  updateList();
+  drawChart();
+  updateSimTable();
+}
+
+/* ---------- Events (Jetzt-Drinks, Gewicht, Buttons) ---------- */
 function addDrink(){
   const typ = typSel.value;
   const s = parseFloat(mengeSel.value);
   const grams = alkoholGramm(typ, s);
   const now = Date.now();
-  const durMin = (DEFAULT_DAUER_MIN[typ] && DEFAULT_DAUER_MIN[typ][String(s)]) || 45;
-  const start = now;
-  const end   = now + durMin*60000;
-  drinks.push({ ty: typ, s, g: grams, tStart: start, tEnd: end });
+  const dminMap = DEFAULT_DAUER_MIN[typ] || {};
+  const durMin = dminMap[String(s)] || (typ==='shot'?6:45);
+  drinks.push({ ty: typ, s, g: grams, tStart: now, tEnd: now + durMin*60000 });
   store.save();
   updateUI();
 }
-
 function resetAll(){
   if(confirm('Alles löschen?')){
     drinks = []; store.save(); updateUI();
   }
 }
-
 function bind(){
-  // Menge je Typ
-  typSel.onchange = ()=>{ fillMengen(); updateUI(); };
+  // "Jetzt" Mengen
+  fillMengen(typSel, mengeSel); setDauerHint();
+  typSel.onchange = ()=>{ fillMengen(typSel, mengeSel); setDauerHint(); updateUI(); };
   mengeSel.onchange = ()=> setDauerHint();
-  fillMengen();
+
+  // Plan Mengen
+  fillPlanMengen();
 
   // Gewicht
   const gEl = document.getElementById('gewicht');
