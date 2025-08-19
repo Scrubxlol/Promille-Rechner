@@ -5,24 +5,40 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Promille Rechner (Live)</title>
   <meta name="theme-color" content="#0a84ff">
+  <!-- Optional für Homescreen-Icon falls vorhanden -->
+  <link rel="apple-touch-icon" href="icon-192.png">
   <style>
-    :root{--bg:#f7f7f7;--card:#fff;--text:#111;--muted:#666;--primary:#0a84ff;--danger:#b00020;--radius:14px}
-    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);
+    :root{
+      /* Dark default */
+      --bg:#0b0b0b; --card:#1a1a1a; --text:#f2f2f2; --muted:#aaa;
+      --primary:#0a84ff; --danger:#b00020; --radius:14px;
+      --grid:#2a2a2a; --axis:#777; --warn:#ff4d4d;
+    }
+    @media (prefers-color-scheme: light){
+      :root{ --bg:#f7f7f7; --card:#fff; --text:#111; --muted:#666; --grid:#eee; --axis:#666; }
+    }
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+         background:var(--bg);color:var(--text);
          padding:env(safe-area-inset-top) 12px calc(12px + env(safe-area-inset-bottom))}
     .wrap{max-width:820px;margin:0 auto}
     h1{font-size:1.4rem;margin:8px 4px 10px}
     .card{background:var(--card);border-radius:var(--radius);padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);margin-bottom:12px}
     .row{display:flex;flex-wrap:wrap;gap:8px}
     label{display:inline-flex;align-items:center;gap:6px;margin:6px 8px 6px 0}
-    input,select,button{font-size:1rem;padding:10px 12px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:#fff}
+    input,select,button{font-size:1rem;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,0.12);background:#121212;color:var(--text)}
+    @media (prefers-color-scheme: light){ input,select,button{background:#fff;border:1px solid rgba(0,0,0,0.1);color:var(--text)} }
     button{background:var(--primary);color:#fff;border:none;min-height:44px}
-    button.ghost{background:transparent;color:var(--text);border:1px solid rgba(0,0,0,.12)}
+    button.ghost{background:transparent;color:var(--text);border:1px solid rgba(255,255,255,0.12)}
+    @media (prefers-color-scheme: light){button.ghost{border:1px solid rgba(0,0,0,0.12)}}
     .prom{font-size:1.8rem;font-weight:700;margin:10px 4px 6px}
     .muted{color:var(--muted)}
-    .entry{margin-bottom:6px}
+    .entry{margin-bottom:6px;display:flex;align-items:center;gap:8px;justify-content:space-between}
+    .del{background:transparent;border:1px solid rgba(255,255,255,.2);padding:4px 8px;border-radius:10px;color:inherit}
+    .del:hover{opacity:.8}
     #warn{display:none;background:rgba(255,0,0,.85);color:#fff;padding:12px;border-radius:12px;margin-bottom:12px;text-align:center;font-weight:700}
     body.danger{background:var(--danger)!important;color:#fff}
-    canvas{width:100%;height:220px;display:block}
+    canvas{width:100%;height:260px;display:block;border-radius:12px}
+    .toolbar{display:flex;flex-wrap:wrap;gap:8px}
   </style>
 </head>
 <body>
@@ -48,6 +64,7 @@
         <select id="typ">
           <option value="bier">Bier (5%)</option>
           <option value="radler">Radler (2.5%)</option>
+          <option value="shot40">Shot (40%)</option>
         </select>
       </label>
       <label>Menge:
@@ -57,17 +74,25 @@
           <option value="0.5" selected>0,5 L</option>
         </select>
       </label>
+      <label id="shotSizeWrap" style="display:none;">Shot-Größe:
+        <select id="shotSize">
+          <option value="0.02">2 cl</option>
+          <option value="0.04">4 cl</option>
+        </select>
+      </label>
     </div>
-    <div class="row">
-      <button id="add">Jetzt getrunken (Smart-Dauer)</button>
+    <div class="toolbar">
+      <button id="add">Jetzt getrunken</button>
+      <button id="refresh" class="ghost">🔄 Aktuell berechnen</button>
       <button id="reset" class="ghost">Alles löschen</button>
     </div>
     <div class="muted" style="margin-top:8px">
-      Standard-Trinkdauer: 0,3 L ≈ 25 min · 0,4 L ≈ 35 min · 0,5 L ≈ 45 min
+      Trinkdauer (Richtwert): 0,3 L ≈ 25 min · 0,4 L ≈ 35 min · 0,5 L ≈ 45 min · Shot ≈ 5 min
     </div>
   </div>
 
-  <div class="prom" id="anzeige">Aktuelle Promille: 0,00‰</div>
+  <div class="prom" id="anzeige">Aktuelle Promille: 0,000‰</div>
+  <div id="sober" class="muted"></div>
 
   <!-- Liste -->
   <div id="log" class="card">
@@ -78,24 +103,20 @@
   <!-- Graph -->
   <div class="card">
     <b>Verlauf (nächste 6 Stunden)</b>
-    <canvas id="chart" width="800" height="220"></canvas>
-    <div class="muted">Aktualisiert automatisch alle 5 min</div>
+    <canvas id="chart"></canvas>
+    <div class="muted">Aktualisiert automatisch alle 2 Minuten</div>
   </div>
 </div>
 
 <script>
-/* ---------- Parameter ---------- */
-const ABBAU = 0.13; // ‰ pro Stunde
+/* ---------- Konstanten ---------- */
+const ABBAU = 0.13; // ‰ pro Stunde (Abbau)
 const R = 0.68;     // Verteilungsfaktor
-const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2});
+const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
+const DEFAULT_DAUER_MIN = { "0.3": 25, "0.4": 35, "0.5": 45, "shot": 5 };
 
-// Standard-Trinkdauer in Minuten je Menge (feel free to tweak)
-const DEFAULT_DAUER_MIN = { "0.3": 25, "0.4": 35, "0.5": 45 };
-
-/* ---------- State ---------- */
-let drinks = []; // { ty, s(L), g(Gramm Alc), tStart(ms), tEnd(ms) }
-
-/* ---------- Storage ---------- */
+/* ---------- State & Storage ---------- */
+let drinks = []; // { ty, s(L), g(Gramm Alc), tStart(ms), tEnd(ms), label }
 const store = {
   get gewicht(){ return +(localStorage.getItem('pr_weight')||70); },
   set gewicht(v){ localStorage.setItem('pr_weight', String(v)); },
@@ -108,18 +129,21 @@ const store = {
 
 /* ---------- Helpers ---------- */
 function alkoholGramm(typ, liter){
-  const vol = (typ==='bier') ? 0.05 : 0.025;
+  let vol;
+  if(typ==='shot40') vol = 0.40;
+  else if(typ==='bier') vol = 0.05;
+  else vol = 0.025; // radler
   return liter * vol * 0.8 * 1000; // g
 }
 
-// Aufnahmemodell: gleichmäßige Aufnahme pro Minute während tStart..tEnd, danach linearer Abbau
+// Aufnahme: gleichmäßige Aufnahme jede Minute während tStart..tEnd, anschließend linearer Abbau
 function bacContributionAt(t, drink, gewicht){
   const mins = Math.max(1, Math.round((drink.tEnd - drink.tStart)/60000));
   const perMinGramm = drink.g / mins;
   let bac = 0;
   for(let ts = drink.tStart; ts <= drink.tEnd; ts += 60000){
-    if (t < ts) continue; // noch nicht getrunken
-    const z0 = perMinGramm / (gewicht * R); // Promille-Anstieg dieser Minute
+    if (t < ts) continue;
+    const z0 = perMinGramm / (gewicht * R);
     const hours = (t - ts) / 3600000;
     bac += Math.max(0, z0 - ABBAU * hours);
   }
@@ -127,18 +151,26 @@ function bacContributionAt(t, drink, gewicht){
 }
 
 function promilleAt(t){
-  const gw = +document.getElementById('gewicht').value || 70;
+  const gw = +document.getElementById('gewicht').value || store.gewicht || 70;
   let sum = 0;
   for(const d of drinks){ sum += bacContributionAt(t, d, gw); }
   return sum;
 }
-
 function promilleJetzt(){ return promilleAt(Date.now()); }
+
+function soberTime(){
+  const p = promilleJetzt();
+  const hrs = p / ABBAU; // einfache lineare Schätzung
+  const t = new Date(Date.now() + hrs*3600000);
+  return t.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+}
 
 /* ---------- UI ---------- */
 function updateUI(){
   const p = promilleJetzt();
   document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
+  document.getElementById('sober').textContent = 'Voraussichtlich nüchtern um: ' + soberTime();
+
   if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
   else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
 
@@ -149,97 +181,152 @@ function updateUI(){
   if(!drinks.length){ empty.style.display='block'; }
   else{
     empty.style.display='none';
-    for(const d of drinks){
+    drinks.forEach((d,i)=>{
       const st = new Date(d.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-      const du = Math.round((d.tEnd - d.tStart)/60000);
-      const div = document.createElement('div'); div.className='entry';
-      div.textContent = `🕒 ${st} · ${NF.format(d.s)} L ${d.ty==='bier'?'Bier':'Radler'} · ${du} min`;
-      log.appendChild(div);
-    }
+      const du = Math.max(1, Math.round((d.tEnd - d.tStart)/60000));
+      const row = document.createElement('div'); row.className='entry';
+      row.innerHTML = `<span>🕒 ${st} · ${d.label} · ${du} min</span>
+                       <button class="del" data-i="${i}" aria-label="Eintrag löschen">×</button>`;
+      log.appendChild(row);
+    });
+    log.querySelectorAll('.del').forEach(btn=>{
+      btn.onclick = ()=>{ drinks.splice(+btn.dataset.i,1); store.save(); updateUI(); };
+    });
   }
 
   drawChart();
 }
 
+/* ---------- Eingabe ---------- */
+function addDrink(){
+  const typ = document.getElementById('typ').value;
+  let s = parseFloat(document.getElementById('menge').value);
+  let label;
+
+  if(typ==='shot40'){
+    const shotL = parseFloat(document.getElementById('shotSize').value); // 0.02 / 0.04
+    s = shotL;
+    label = `${(shotL*100).toFixed(0)} cl Shot (40%)`;
+  }else{
+    const name = (typ==='bier') ? 'Bier' : 'Radler';
+    label = `${(s).toFixed(1)} L ${name}`;
+  }
+
+  const grams = alkoholGramm(typ, s);
+  const now = Date.now();
+  const durMin = (typ==='shot40') ? DEFAULT_DAUER_MIN.shot : (DEFAULT_DAUER_MIN[String(s)] || 45);
+  const start = now, end = now + durMin*60000;
+
+  drinks.push({ ty: typ, s, g: grams, tStart: start, tEnd: end, label });
+  store.save();
+  updateUI();
+}
+
 /* ---------- Graph ---------- */
 function drawChart(){
   const cvs = document.getElementById('chart');
-  const ctx = cvs.getContext('2d');
-  const W = cvs.width, H = cvs.height;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cvs.clientWidth || 800;
+  const cssH = cvs.clientHeight || 260;
+  if(cvs.width !== Math.round(cssW*dpr)){ cvs.width = Math.round(cssW*dpr); }
+  if(cvs.height!== Math.round(cssH*dpr)){ cvs.height= Math.round(cssH*dpr); }
+  const ctx = cvs.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0);
+
+  const W = cssW, H = cssH;
   ctx.clearRect(0,0,W,H);
+
   // Achsen
-  ctx.strokeStyle = '#ccc'; ctx.lineWidth = 1;
+  ctx.strokeStyle = 'var(--axis)'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(40,H-30); ctx.lineTo(W-10,H-30); ctx.lineTo(W-10,20); ctx.stroke();
 
   const now = Date.now();
   const tMin = now, tMax = now + 6*3600000;
   const xOf = t => 40 + (W-60) * ((t - tMin)/(tMax - tMin));
 
+  // Punkte (alle 5 min für glatte Kurve)
   const points = [];
-  for(let t = tMin; t <= tMax; t += 600000){ // alle 10 min
-    points.push({t, p: promilleAt(t)});
-  }
+  for(let t = tMin; t <= tMax; t += 300000){ points.push({t, p: promilleAt(t)}); }
 
   const maxP = Math.max(0.8, ...points.map(p=>p.p)) * 1.2;
   const yOf = p => (H-30) - (H-60) * (p / (maxP||1));
 
-  // 0.8‰ Linie
-  ctx.strokeStyle = '#ff4d4d'; ctx.setLineDash([4,4]);
+  // rote Warnfläche > 0.8‰
   const yWarn = yOf(0.8);
+  ctx.fillStyle = 'rgba(255,77,77,0.15)';
+  ctx.fillRect(40, 20, (W-50), Math.max(0, (yWarn-20)));
+
+  // horizontale Ticks
+  ctx.strokeStyle = 'var(--grid)';
+  ctx.fillStyle = 'var(--muted)'; ctx.font = '12px -apple-system,system-ui';
+  const step = 0.2;
+  for(let v=0; v<=maxP; v+=step){
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(40,y); ctx.lineTo(W-10,y); ctx.stroke();
+    ctx.fillText(v.toFixed(1)+'‰', 6, y+4);
+  }
+
+  // 0.8-Linie
+  ctx.strokeStyle = 'var(--warn)'; ctx.setLineDash([4,4]);
   ctx.beginPath(); ctx.moveTo(40,yWarn); ctx.lineTo(W-10,yWarn); ctx.stroke();
   ctx.setLineDash([]);
 
   // Kurve
-  ctx.strokeStyle = '#0a84ff'; ctx.lineWidth = 2; ctx.beginPath();
+  ctx.strokeStyle = 'var(--primary)'; ctx.lineWidth = 2;
+  ctx.beginPath();
   points.forEach((pt,i)=>{ const x=xOf(pt.t), y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
   ctx.stroke();
 
   // X-Labels stündlich
-  ctx.fillStyle = '#666'; ctx.font = '12px -apple-system,system-ui';
+  ctx.fillStyle = 'var(--muted)';
   for(let t = tMin; t <= tMax; t += 3600000){
     const x = xOf(t);
     const lab = new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
     ctx.fillText(lab, x-14, H-10);
-    ctx.beginPath(); ctx.strokeStyle = '#eee'; ctx.moveTo(x,H-30); ctx.lineTo(x,20); ctx.stroke();
+    ctx.beginPath(); ctx.strokeStyle = 'var(--grid)'; ctx.moveTo(x,H-30); ctx.lineTo(x,20); ctx.stroke();
   }
 }
 
-/* ---------- Events ---------- */
-function addDrink(){
-  const typ = document.getElementById('typ').value;
-  const s = parseFloat(document.getElementById('menge').value);
-
-  const grams = alkoholGramm(typ, s);
-  const now = Date.now();
-  const durMin = DEFAULT_DAUER_MIN[String(s)] || 45; // Fallback 45 min
-  const start = now;                   // Smart: beginnt jetzt
-  const end   = now + durMin*60000;    // endet nach Standarddauer
-
-  drinks.push({ ty: typ, s, g: grams, tStart: start, tEnd: end });
-  store.save();
-  updateUI();
-}
-
-function resetAll(){
-  if(confirm('Alles löschen?')){
-    drinks = []; store.save(); updateUI();
-  }
-}
-
+/* ---------- Bindings ---------- */
 function bind(){
+  // Gewicht
   const gEl = document.getElementById('gewicht');
   gEl.value = store.gewicht;
-  gEl.addEventListener('change', ()=>{ store.gewicht = Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
+  gEl.addEventListener('change', ()=>{ store.gewicht = Math.max(40, Math.min(200, +gEl.value||70)); updateUI(); });
+
+  // Typ/Shot-Umschalter
+  const typEl = document.getElementById('typ');
+  const mengeEl = document.getElementById('menge');
+  const shotWrap = document.getElementById('shotSizeWrap');
+  typEl.addEventListener('change', ()=>{
+    const shot = typEl.value==='shot40';
+    shotWrap.style.display = shot ? '' : 'none';
+    mengeEl.disabled = shot; // Shots nutzen eigenes Größenfeld
+    updateUI();
+  });
 
   document.getElementById('add').onclick = addDrink;
-  document.getElementById('reset').onclick = resetAll;
+  document.getElementById('reset').onclick = ()=>{
+    if(confirm('Alles löschen?')){
+      drinks = []; store.save(); updateUI();
+    }
+  };
+  document.getElementById('refresh').onclick = updateUI;
 
-  // Auto-Update alle 5 min
-  setInterval(updateUI, 5*60*1000);
+  // Auto-Refresh alle 2 Minuten
+  setInterval(updateUI, 120000);
 }
 
 /* ---------- Start ---------- */
 store.load(); bind(); updateUI();
+
+// PWA: registriere SW nur, wenn eine sw.js existiert
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    fetch('sw.js', {method:'HEAD'}).then(r=>{
+      if(r.ok) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    }).catch(()=>{});
+  });
+}
 </script>
 </body>
 </html>
