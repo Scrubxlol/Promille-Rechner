@@ -46,6 +46,26 @@
     th{text-align:left}
     .plan-entry{display:flex;align-items:center;gap:8px;margin-top:8px}
     .plan-list .entry{display:flex;justify-content:space-between;align-items:center}
+
+    /* --- Pop-out Plan Drawer --- */
+    .fab{
+      position:fixed; right:16px; bottom:16px; z-index:9999;
+      width:56px; height:56px; border-radius:50%;
+      display:flex; align-items:center; justify-content:center;
+      background:var(--primary); color:#fff; font-size:24px; border:none;
+      box-shadow:0 6px 16px rgba(0,0,0,.35);
+    }
+    #planPanel{
+      position:fixed; right:16px; bottom:88px; z-index:9998;
+      width:min(92vw, 360px);
+      transform:translateY(12px); opacity:0; pointer-events:none;
+      transition:transform .18s ease, opacity .18s ease;
+    }
+    #planPanel.open{ transform:translateY(0); opacity:1; pointer-events:auto; }
+    #planPanel .card{ margin-bottom:0; overflow:auto; max-height:min(70vh, 520px); }
+    #planHeader{ display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+    #planHeader b{ font-size:1rem; }
+    #planClose{ background:transparent; border:1px solid rgba(255,255,255,.2); color:var(--text); padding:6px 10px; border-radius:10px; }
   </style>
 </head>
 <body>
@@ -60,7 +80,13 @@
       <label>Gewicht:
         <input aria-label="Gewicht in kg" type="number" id="gewicht" min="40" max="200" step="1" value="70" style="width:110px"> kg
       </label>
-      <span class="muted">Standard 70 kg (wird gespeichert)</span>
+      <label>Geschlecht:
+        <select id="sex">
+          <option value="m">männlich</option>
+          <option value="w">weiblich</option>
+        </select>
+      </label>
+      <span class="muted">70 kg Standard · r: m 0,68 / w 0,55</span>
     </div>
   </div>
 
@@ -100,10 +126,19 @@
     <canvas id="chart"></canvas>
     <div class="muted">Aktualisiert automatisch alle 2 Minuten</div>
   </div>
+</div>
 
-  <!-- Trinkplan (Simulation) -->
+<!-- FAB (nur für dich) -->
+<button class="fab" id="planToggle" aria-label="Trinkplan öffnen/schließen">🧪</button>
+
+<!-- Pop-out Panel mit deinem bisherigen Plan-Bereich -->
+<div id="planPanel" aria-hidden="true">
   <div class="card">
-    <b>Trinkplan (Simulation)</b>
+    <div id="planHeader">
+      <b>Trinkplan (Simulation)</b>
+      <button id="planClose" class="ghost">Schließen</button>
+    </div>
+
     <div class="plan-entry">
       <label>Getränk:
         <select id="planTyp">
@@ -144,14 +179,13 @@
 <script>
 /* ---------- Parameter ---------- */
 const ABBAU = 0.12;                 // ‰ pro Stunde (Null-Ordnung)
-const R = 0.68;                     // Verteilungsfaktor
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
 const DEFAULT_DAUER_MIN = {
   bier:  { "0.3":25, "0.4":35, "0.5":45 },
   radler:{ "0.3":20, "0.4":28, "0.5":36 },
   shot:  { "0.02":5,  "0.04":8  }
 };
-const F_IMMEDIATE = 0.70;           // 70% sofort, 30% über Dauer
+const F_IMMEDIATE = 0.70;           // 70% sofort, 30% langsam
 
 /* ---------- State + Storage ---------- */
 let drinks = []; // { ty, s(L), g, tStart(ms), tEnd(ms) }
@@ -167,60 +201,86 @@ const store = {
   save(){ localStorage.setItem('pr_drinks', JSON.stringify(drinks)); }
 };
 
-/* ---------- Alkohol & Planung ---------- */
-function alkoholGramm(typ, liter){
-  let vol = 0.05; if(typ==='radler') vol=0.025; if(typ==='shot') vol=0.40;
-  return liter * vol * 0.8 * 1000; // Gramm reiner Alkohol
+/* ---------- Personalisierung ---------- */
+function getR(){
+  const s = document.getElementById('sex')?.value || 'm';
+  return s === 'w' ? 0.55 : 0.68;
 }
 
+/* ---------- Alkohol & Aufnahme ---------- */
+function alkoholGramm(typ, liter){
+  // 0.789 g/ml (genauer)
+  let vol = 0.05; if(typ==='radler') vol=0.025; if(typ==='shot') vol=0.40;
+  return liter * vol * 0.789 * 1000; // Gramm reiner Alkohol
+}
+
+// Halbwertszeiten (Exponentielle Aufnahme des langsamen Anteils)
+function tauFor(drink){
+  return drink.ty === 'shot' ? 6 : 12; // Minuten
+}
+
+// Intake-Zeitreihe (Gramm/Minute) für EIN Getränk: 70% sofort, 30% mit exp. Halbwertszeit über reale Dauer
+function intakeSeriesForDrink(drink){
+  const startMin = Math.floor(drink.tStart / 60000);
+  const endMin   = Math.max(startMin+1, Math.ceil(drink.tEnd / 60000));
+  const slowLen  = endMin - startMin;
+
+  const g0 = drink.g * F_IMMEDIATE;     // sofort am Start
+  const gS = drink.g - g0;               // langsamer Anteil
+  const tau = tauFor(drink);
+  const k = Math.log(2) / (tau || 1);
+
+  const absorbedAt = (m) => gS * (1 - Math.exp(-k * Math.min(m, slowLen)));
+
+  const series = new Map();
+  // Sofortanteil zum Start
+  series.set(startMin, (series.get(startMin)||0) + g0);
+  // pro Minute: Zuwachs des langsamen Anteils
+  for(let i=0; i<slowLen; i++){
+    const inc = absorbedAt(i+1) - absorbedAt(i);
+    const tMin = startMin + i;
+    series.set(tMin, (series.get(tMin)||0) + inc);
+  }
+  return {series, startMin, endMin};
+}
+
+// Alle Getränke zusammenführen
 function buildSchedule(allDrinks){
-  const sched = new Map(); // minute -> Gramm
-  if(!allDrinks.length) return {sched, minMin: Math.floor(Date.now()/60000), maxMin: Math.floor(Date.now()/60000)};
-  let minMin = Infinity, maxMin = -Infinity;
+  const sched = new Map();
+  let minMin = Math.floor(Date.now()/60000), maxMin = minMin;
   for(const d of allDrinks){
-    const startMin = Math.floor(d.tStart/60000);
-    const endMin   = Math.max(startMin+1, Math.ceil(d.tEnd/60000));
-    if(startMin < minMin) minMin = startMin;
-    if(endMin   > maxMin) maxMin = endMin;
-    const g0 = d.g * F_IMMEDIATE;
-    const gS = d.g - g0;
-
-    // sofort am Start-Minute
-    sched.set(startMin, (sched.get(startMin)||0) + g0);
-
-    // Rest gleichmäßig über die tatsächliche Dauer
-    const slowMinutes = Math.max(1, endMin - startMin);
-    const perMin = gS / slowMinutes;
-    for(let m = 0; m < slowMinutes; m++){
-      const ts = startMin + m;
-      sched.set(ts, (sched.get(ts)||0) + perMin);
+    const {series, startMin, endMin} = intakeSeriesForDrink(d);
+    minMin = Math.min(minMin, startMin);
+    maxMin = Math.max(maxMin, endMin);
+    for(const [m, g] of series.entries()){
+      sched.set(m, (sched.get(m)||0) + g);
     }
   }
   return {sched, minMin, maxMin};
 }
 
-// Null-Ordnung: pro Minute BAC(t+1) = max(0, BAC(t) + intake/(Gewicht*R) - ABBAU/60)
-function integrateSeries(allDrinks, endMs, gewicht){
+// Null-Ordnung integrieren: einmal pro Minute abziehen
+function integrateSeries(allDrinks, endMs, gewicht, r){
   const {sched, minMin} = buildSchedule(allDrinks);
   const endMin = Math.floor(endMs/60000);
   let bac = 0;
-  const series = new Map(); // minute -> BAC
+  const series = new Map();
   for(let m = minMin; m <= endMin; m++){
     const grams = sched.get(m) || 0;
-    bac = Math.max(0, bac + grams/(gewicht*R) - ABBAU/60);
+    bac = Math.max(0, bac + grams/(gewicht*r) - ABBAU/60);
     series.set(m, bac);
   }
   return {startMin: minMin, endMin, series};
 }
 
+function includePlan(){ return document.getElementById('planInclude')?.checked; }
 function promilleJetztValue(){
   const arr = includePlan()? drinks.concat(plans) : drinks;
   const gw = +document.getElementById('gewicht').value || 70;
-  const {endMin, series} = integrateSeries(arr, Date.now(), gw);
+  const r  = getR();
+  const {endMin, series} = integrateSeries(arr, Date.now(), gw, r);
   return series.get(endMin) || 0;
 }
-
-function includePlan(){ return document.getElementById('planInclude')?.checked; }
 
 /* ---------- UI: Jetzt-Drinks ---------- */
 const typSel = document.getElementById('typ');
@@ -278,15 +338,14 @@ function drawChart(){
 
   const arr = includePlan()? drinks.concat(plans) : drinks;
   const gw = +document.getElementById('gewicht').value || 70;
-  // Integriere bis tMax, dann lese Werte für jeden Minute
-  const {startMin, endMin, series} = integrateSeries(arr, tMax, gw);
+  const r  = getR();
 
-  // Punkte alle 2 Minuten ab jetzt
+  const {series} = integrateSeries(arr, tMax, gw, r);
+
   const points=[];
   for(let ms = tMin; ms <= tMax; ms += 2*60000){
     const m = Math.floor(ms/60000);
-    const p = series.get(m) ?? 0;
-    points.push({t:ms, p});
+    points.push({t:ms, p: series.get(m) ?? 0});
   }
 
   const maxP=Math.max(0.8,...points.map(p=>p.p))*1.2 || 1;
@@ -325,9 +384,10 @@ function updateSimTable(){
   tbody.innerHTML='';
   const arr = includePlan()? drinks.concat(plans) : drinks;
   const gw = +document.getElementById('gewicht').value || 70;
+  const r  = getR();
   const start=Date.now(), end=start+3*3600e3;
 
-  const {series} = integrateSeries(arr, end, gw);
+  const {series} = integrateSeries(arr, end, gw, r);
   for(let ms=start; ms<=end; ms+=10*60000){
     const m=Math.floor(ms/60000);
     const tr=document.createElement('tr');
@@ -410,10 +470,10 @@ function bind(){
   // Plan
   fillPlanMengen();
 
-  // Gewicht
-  const gEl=document.getElementById('gewicht');
-  gEl.value=store.gewicht;
+  // Gewicht + Geschlecht
+  const gEl=document.getElementById('gewicht'); gEl.value=store.gewicht;
   gEl.addEventListener('change',()=>{ store.gewicht=Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
+  document.getElementById('sex').addEventListener('change', updateUI);
 
   // Buttons
   document.getElementById('add').onclick=addDrink;
@@ -422,6 +482,17 @@ function bind(){
 
   // Auto-Update alle 2 Minuten
   setInterval(updateUI, 2*60*1000);
+
+  // Pop-out toggles
+  const panel = document.getElementById('planPanel');
+  const toggle= document.getElementById('planToggle');
+  const close = document.getElementById('planClose');
+  const setOpen = (open) => {
+    panel.classList.toggle('open', open);
+    panel.setAttribute('aria-hidden', open ? 'false' : 'true');
+  };
+  toggle.addEventListener('click', ()=> setOpen(!panel.classList.contains('open')));
+  close.addEventListener('click',  ()=> setOpen(false));
 }
 
 /* ---------- Start ---------- */
