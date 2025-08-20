@@ -4,6 +4,14 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Promille Rechner (Live + Plan)</title>
+
+  <!-- iOS App-Feeling -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Promille Rechner">
+  <link rel="apple-touch-icon" sizes="192x192" href="beer-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="beer-icon.png">
+
   <meta name="theme-color" content="#0a84ff">
   <link rel="apple-touch-icon" href="icon-192.png">
   <style>
@@ -131,7 +139,7 @@
 <!-- FAB (nur für dich) -->
 <button class="fab" id="planToggle" aria-label="Trinkplan öffnen/schließen">🧪</button>
 
-<!-- Pop-out Panel mit deinem bisherigen Plan-Bereich -->
+<!-- Pop-out Panel mit Plan -->
 <div id="planPanel" aria-hidden="true">
   <div class="card">
     <div id="planHeader">
@@ -244,10 +252,10 @@ function intakeSeriesForDrink(drink){
   return {series, startMin, endMin};
 }
 
-// Alle Getränke zusammenführen
+/* ---------- Schedule zusammenführen (robuster Start/Ende) ---------- */
 function buildSchedule(allDrinks){
   const sched = new Map();
-  let minMin = Math.floor(Date.now()/60000), maxMin = minMin;
+  let minMin = Infinity, maxMin = -Infinity;
   for(const d of allDrinks){
     const {series, startMin, endMin} = intakeSeriesForDrink(d);
     minMin = Math.min(minMin, startMin);
@@ -256,20 +264,38 @@ function buildSchedule(allDrinks){
       sched.set(m, (sched.get(m)||0) + g);
     }
   }
+  if(!isFinite(minMin)){ 
+    minMin = Math.floor(Date.now()/60000); 
+    maxMin = minMin; 
+  }
   return {sched, minMin, maxMin};
 }
 
-// Null-Ordnung integrieren: einmal pro Minute abziehen
+/* ---------- Null-Ordnung integrieren: jetzt in 30s-Schritten ---------- */
 function integrateSeries(allDrinks, endMs, gewicht, r){
   const {sched, minMin} = buildSchedule(allDrinks);
   const endMin = Math.floor(endMs/60000);
+
   let bac = 0;
   const series = new Map();
-  for(let m = minMin; m <= endMin; m++){
-    const grams = sched.get(m) || 0;
-    bac = Math.max(0, bac + grams/(gewicht*r) - ABBAU/60);
+
+  // 30 Sekunden pro Schritt
+  for(let ms = minMin*60000; ms <= endMin*60000; ms += 30000){
+    const m = Math.floor(ms/60000);
+
+    // Gramm für diese Minute auf zwei 30s-Steps verteilen
+    const gramsThisMinute = sched.get(m) || 0;
+    const gramsStep = gramsThisMinute / 2;
+
+    // Abbau pro 30 Sekunden
+    const abbauStep = ABBAU / 120;
+
+    bac = Math.max(0, bac + gramsStep/(gewicht*r) - abbauStep);
+
+    // Minutengenauen Wert speichern (kompatibel mit bestehender UI)
     series.set(m, bac);
   }
+
   return {startMin: minMin, endMin, series};
 }
 
@@ -368,140 +394,4 @@ function drawChart(){
   // X-Labels
   ctx.fillStyle = css('--muted','#aaa'); ctx.font='12px -apple-system,system-ui';
   for(let ms=tMin; ms<=tMax; ms+=3600000){
-    const x=xOf(ms); const lab=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    ctx.fillText(lab,x-14,H-8);
-    ctx.beginPath(); ctx.strokeStyle=css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
-  }
-
-  // Y-Labels
-  ctx.textAlign='right'; ctx.fillStyle=css('--muted','#aaa');
-  for(let p=0;p<=maxP;p+=0.2){ const y=yOf(p); ctx.fillText(p.toFixed(1).replace('.',','),PADL-6,y+4); }
-}
-
-/* ---------- Simulationstabelle ---------- */
-function updateSimTable(){
-  const tbody = document.querySelector('#simTable tbody');
-  tbody.innerHTML='';
-  const arr = includePlan()? drinks.concat(plans) : drinks;
-  const gw = +document.getElementById('gewicht').value || 70;
-  const r  = getR();
-  const start=Date.now(), end=start+3*3600e3;
-
-  const {series} = integrateSeries(arr, end, gw, r);
-  for(let ms=start; ms<=end; ms+=10*60000){
-    const m=Math.floor(ms/60000);
-    const tr=document.createElement('tr');
-    const td1=document.createElement('td'), td2=document.createElement('td');
-    td1.textContent=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    td2.textContent=NF.format(series.get(m)||0)+'‰';
-    tr.appendChild(td1); tr.appendChild(td2); tbody.appendChild(tr);
-  }
-}
-
-/* ---------- Plan-UI ---------- */
-const planTyp=document.getElementById('planTyp');
-const planMenge=document.getElementById('planMenge');
-const planStartMin=document.getElementById('planStartMin');
-const planDauerMin=document.getElementById('planDauerMin');
-
-function fillPlanMengen(){
-  fillMengen(planTyp, planMenge);
-  const t=planTyp.value,s=planMenge.value;
-  planDauerMin.value=(DEFAULT_DAUER_MIN[t]&&DEFAULT_DAUER_MIN[t][s])||30;
-}
-planTyp.onchange=()=>{ fillPlanMengen(); };
-planMenge.onchange=()=>{ const t=planTyp.value,s=planMenge.value; planDauerMin.value=(DEFAULT_DAUER_MIN[t]&&DEFAULT_DAUER_MIN[t][s])||30; };
-
-document.getElementById('planAdd').onclick=()=>{
-  const ty=planTyp.value, s=parseFloat(planMenge.value);
-  const start=Date.now()+Math.max(0,(+planStartMin.value||0))*60000;
-  const dur=Math.max(1,(+planDauerMin.value||30));
-  const grams=alkoholGramm(ty,s);
-  plans.push({ ty, s, g:grams, tStart:start, tEnd:start+dur*60000 });
-  renderPlanList(); updateUI();
-};
-document.getElementById('planClear').onclick=()=>{ plans=[]; renderPlanList(); updateUI(); };
-document.getElementById('planInclude').onchange=()=>{ updateUI(); };
-
-function renderPlanList(){
-  const box=document.getElementById('planList'), empty=document.getElementById('planEmpty');
-  box.querySelectorAll('.entry').forEach(e=>e.remove());
-  if(!plans.length){ empty.style.display='block'; return; }
-  empty.style.display='none';
-  plans.forEach((p,i)=>{
-    const name=p.ty==='shot'?(p.s===0.04?'Shot 4 cl':'Shot 2 cl'):`${(p.s).toFixed(1).replace('.',',')} L ${p.ty==='bier'?'Bier':'Radler'}`;
-    const st=new Date(p.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    const du=Math.round((p.tEnd-p.tStart)/60000);
-    const row=document.createElement('div'); row.className='entry';
-    row.innerHTML=`<span>📅 ${st} · ${name} · ${du} min</span><button class="ghost" data-del="${i}">×</button>`;
-    box.appendChild(row);
-  });
-  box.querySelectorAll('button[data-del]').forEach(btn=>{
-    btn.onclick=()=>{ plans.splice(+btn.dataset.del,1); renderPlanList(); updateUI(); };
-  });
-}
-
-/* ---------- Update-Kaskade ---------- */
-function updateUI(){
-  const p = promilleJetztValue();
-  document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
-  if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
-  else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
-  updateList(); drawChart(); updateSimTable();
-}
-
-/* ---------- Events ---------- */
-function addDrink(){
-  const typ=typSel.value, s=parseFloat(mengeSel.value);
-  const grams=alkoholGramm(typ,s);
-  const now=Date.now();
-  const dminMap=DEFAULT_DAUER_MIN[typ]||{};
-  const durMin=dminMap[String(s)]||(typ==='shot'?6:45);
-  drinks.push({ ty:typ, s, g:grams, tStart:now, tEnd:now+durMin*60000 });
-  store.save(); updateUI();
-}
-function resetAll(){ if(confirm('Alles löschen?')){ drinks=[]; store.save(); updateUI(); } }
-function bind(){
-  // Jetzt
-  fillMengen(typSel,mengeSel); setDauerHint();
-  typSel.onchange=()=>{ fillMengen(typSel,mengeSel); setDauerHint(); updateUI(); };
-  mengeSel.onchange=()=> setDauerHint();
-
-  // Plan
-  fillPlanMengen();
-
-  // Gewicht + Geschlecht
-  const gEl=document.getElementById('gewicht'); gEl.value=store.gewicht;
-  gEl.addEventListener('change',()=>{ store.gewicht=Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
-  document.getElementById('sex').addEventListener('change', updateUI);
-
-  // Buttons
-  document.getElementById('add').onclick=addDrink;
-  document.getElementById('reset').onclick=resetAll;
-  document.getElementById('update').onclick=updateUI;
-
-  // Auto-Update alle 2 Minuten
-  setInterval(updateUI, 2*60*1000);
-
-  // Pop-out toggles
-  const panel = document.getElementById('planPanel');
-  const toggle= document.getElementById('planToggle');
-  const close = document.getElementById('planClose');
-  const setOpen = (open) => {
-    panel.classList.toggle('open', open);
-    panel.setAttribute('aria-hidden', open ? 'false' : 'true');
-  };
-  toggle.addEventListener('click', ()=> setOpen(!panel.classList.contains('open')));
-  close.addEventListener('click',  ()=> setOpen(false));
-}
-
-/* ---------- Start ---------- */
-store.load(); bind(); updateUI();
-
-// PWA: optional
-if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
-}
-</script>
-</body>
-</html>
+    const x=xOf(ms); const lab=new Date(ms).
