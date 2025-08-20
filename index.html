@@ -146,15 +146,15 @@
 const ABBAU = 0.13;                 // ‰ pro Stunde
 const R = 0.68;                     // Verteilungsfaktor
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
-const DEFAULT_DAUER_MIN = {         // Standard-Trinkdauer
+const DEFAULT_DAUER_MIN = {
   bier:  { "0.3":25, "0.4":35, "0.5":45 },
   radler:{ "0.3":20, "0.4":28, "0.5":36 },
   shot:  { "0.02":5,  "0.04":8  }
 };
 
 /* ---------- State + Storage ---------- */
-let drinks = []; // { ty, s(L), g(Gramm Alc), tStart(ms), tEnd(ms) }
-let plans  = []; // wie oben, aber nur Simulation (nicht gespeichert)
+let drinks = []; // { ty, s(L), g, tStart(ms), tEnd(ms) }
+let plans  = [];
 
 const store = {
   get gewicht(){ return +(localStorage.getItem('pr_weight')||70); },
@@ -168,24 +168,22 @@ const store = {
 
 /* ---------- Helpers ---------- */
 function alkoholGramm(typ, liter){
-  let vol = 0.05;
-  if(typ==='radler') vol = 0.025;
-  if(typ==='shot')   vol = 0.40;
+  let vol = 0.05; if(typ==='radler') vol=0.025; if(typ==='shot') vol=0.40;
   return liter * vol * 0.8 * 1000; // Gramm reiner Alkohol
 }
 
-// Hybrid-Aufnahme: großer Sofort-Anteil + kurzer Nachlauf
+// Hybrid-Aufnahme: 60/40 (Bier/Radler), 70/30 (Shot)
+// WICHTIG: langsamer Anteil wird über GENAU (tEnd - tStart) Minuten verteilt!
 function bacContributionAt(t, drink, gewicht){
-  const fImmediate = (drink.ty === 'shot') ? 0.70 : 0.60; // Sofortanteil
-  const slowMinutes = (drink.ty === 'shot') ? 10 : 30;    // Nachlaufdauer
-
-  const g0 = drink.g * fImmediate;        // sofort
-  const gS = drink.g - g0;                 // langsam
+  const fImmediate = (drink.ty==='shot') ? 0.70 : 0.60;
+  const g0 = drink.g * fImmediate;           // sofort
+  const gS = drink.g - g0;                    // langsam
   const start = drink.tStart;
+  const slowMinutes = Math.max(1, Math.round((drink.tEnd - drink.tStart)/60000));
 
   let bac = 0;
 
-  // Sofort-Anteil
+  // Sofort-Anteil (als "eine Minute" zum Start)
   if (t >= start) {
     const z0 = g0 / (gewicht * R);
     const hours = (t - start) / 3600000;
@@ -193,10 +191,9 @@ function bacContributionAt(t, drink, gewicht){
   }
 
   // Langsam-Anteil: gleichmäßig pro Minute über slowMinutes
-  const perMin = (slowMinutes > 0) ? (gS / slowMinutes) : 0;
-  const endSlow = start + slowMinutes * 60000;
-
-  for (let ts = start; ts < endSlow; ts += 60000) {
+  const perMin = gS / slowMinutes;
+  for (let i=0; i<slowMinutes; i++){
+    const ts = start + i*60000;
     if (t < ts) continue;
     const z = perMin / (gewicht * R);
     const hours = (t - ts) / 3600000;
@@ -207,15 +204,11 @@ function bacContributionAt(t, drink, gewicht){
 
 function promilleAt(t, arr){
   const gw = +document.getElementById('gewicht').value || 70;
-  let sum = 0;
-  for(const d of arr){ sum += bacContributionAt(t, d, gw); }
+  let sum = 0; for(const d of arr){ sum += bacContributionAt(t, d, gw); }
   return sum;
 }
-function promilleJetzt(){
-  const arr = includePlan() ? drinks.concat(plans) : drinks;
-  return promilleAt(Date.now(), arr);
-}
 function includePlan(){ return document.getElementById('planInclude')?.checked; }
+function promilleJetzt(){ const arr = includePlan()? drinks.concat(plans) : drinks; return promilleAt(Date.now(), arr); }
 
 /* ---------- UI: Jetzt-Drinks ---------- */
 const typSel = document.getElementById('typ');
@@ -223,27 +216,20 @@ const mengeSel = document.getElementById('menge');
 const dauerHinweis = document.getElementById('dauerHinweis');
 
 function fillMengen(selTyp, selMengeEl){
-  const t = selTyp.value;
-  const el = selMengeEl;
+  const t = selTyp.value, el = selMengeEl;
   const opts = (t==='shot')
     ? [{v:'0.02',l:'2 cl'},{v:'0.04',l:'4 cl'}]
     : [{v:'0.3',l:'0,3 L'},{v:'0.4',l:'0,4 L'},{v:'0.5',l:'0,5 L'}];
-  el.innerHTML = '';
-  opts.forEach(o=>{
-    const opt=document.createElement('option'); opt.value=o.v; opt.textContent=o.l; el.appendChild(opt);
-  });
+  el.innerHTML=''; opts.forEach(o=>{const op=document.createElement('option');op.value=o.v;op.textContent=o.l;el.appendChild(op);});
   if(t==='shot') el.value='0.02'; else el.value='0.5';
 }
-
 function setDauerHint(){
   const t=typSel.value, s=mengeSel.value;
   if(t==='shot') dauerHinweis.textContent = (s==='0.02'?'~5 min':'~8 min');
   else dauerHinweis.textContent = '0,3 L ≈ 25 min · 0,4 L ≈ 35 min · 0,5 L ≈ 45 min';
 }
-
 function updateList(){
-  const log = document.getElementById('log');
-  const empty = document.getElementById('empty');
+  const log = document.getElementById('log'), empty = document.getElementById('empty');
   log.querySelectorAll('.entry').forEach(e=>e.remove());
   if(!drinks.length){ empty.style.display='block'; return; }
   empty.style.display='none';
@@ -265,131 +251,106 @@ function drawChart(){
   const cvs = document.getElementById('chart');
   const ctx = cvs.getContext('2d');
 
-  // Retina-Schärfe
+  // Retina
   const dpr = Math.max(1, window.devicePixelRatio || 1);
-  const cssW = cvs.clientWidth || 800;
-  const cssH = 240;
-  cvs.width  = Math.round(cssW * dpr);
-  cvs.height = Math.round(cssH * dpr);
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.scale(dpr,dpr);
+  const cssW = cvs.clientWidth || 800, cssH = 240;
+  cvs.width = Math.round(cssW*dpr); cvs.height = Math.round(cssH*dpr);
+  ctx.setTransform(1,0,0,1,0,0); ctx.scale(dpr,dpr);
 
-  const W = cssW, H = cssH, PADL=44, PADB=28, PADT=16, PADR=10;
+  const W=cssW,H=cssH, PADL=44,PADB=28,PADT=16,PADR=10;
   ctx.clearRect(0,0,W,H);
 
-  const now = Date.now();
-  const tMin = now, tMax = now + 6*3600000;
+  const now=Date.now(), tMin=now, tMax=now+6*3600e3;
   const xOf = t => PADL + (W-PADL-PADR) * ((t - tMin)/(tMax - tMin));
+  const css = (n,f) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || f;
 
-  // Datensatz wählen: mit/ohne Plan
-  const arr = includePlan() ? drinks.concat(plans) : drinks;
+  const arr = includePlan()? drinks.concat(plans) : drinks;
 
-  // Samples alle 5 Minuten
-  const points = [];
-  for(let t=tMin; t<=tMax; t+=5*60000){ points.push({t, p: promilleAt(t, arr)}); }
+  // alle 2 Minuten sampeln (früher Anstieg sichtbar)
+  const points=[]; for(let t=tMin; t<=tMax; t+=2*60000){ points.push({t, p: promilleAt(t,arr)}); }
 
-  const maxP = Math.max(0.8, ...points.map(p=>p.p)) * 1.2 || 1;
-  const yOf = p => (H-PADB) - (H-PADT-PADB) * (p / maxP);
+  const maxP=Math.max(0.8,...points.map(p=>p.p))*1.2 || 1;
+  const yOf = p => (H-PADB) - (H-PADT-PADB)*(p/maxP);
 
   // Grid + Achsen
-  const css = (name, fallback) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
-  ctx.strokeStyle = css('--grid','#444');
-  ctx.lineWidth = 1;
-  for(let p=0; p<=maxP; p+=0.2){
-    const y=yOf(p); ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(W-PADR,y); ctx.stroke();
-  }
+  ctx.strokeStyle = css('--grid','#444'); ctx.lineWidth=1;
+  for(let p=0;p<=maxP;p+=0.2){ const y=yOf(p); ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(W-PADR,y); ctx.stroke(); }
   ctx.strokeStyle = css('--axis','#888');
   ctx.beginPath(); ctx.moveTo(PADL,H-PADB); ctx.lineTo(W-PADR,H-PADB); ctx.lineTo(W-PADR,PADT); ctx.stroke();
 
   // 0.8‰ Linie
   ctx.strokeStyle = css('--warn','#ff5252'); ctx.setLineDash([4,4]);
-  const yWarn = yOf(0.8);
-  ctx.beginPath(); ctx.moveTo(PADL,yWarn); ctx.lineTo(W-PADR,yWarn); ctx.stroke();
-  ctx.setLineDash([]);
+  const yWarn=yOf(0.8); ctx.beginPath(); ctx.moveTo(PADL,yWarn); ctx.lineTo(W-PADR,yWarn); ctx.stroke(); ctx.setLineDash([]);
 
   // Kurve
-  ctx.strokeStyle = css('--curve','#4dd0e1');
-  ctx.lineWidth = 2; ctx.beginPath();
-  points.forEach((pt,i)=>{ const x=xOf(pt.t), y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
-  ctx.stroke();
+  ctx.strokeStyle = css('--curve','#4dd0e1'); ctx.lineWidth=2; ctx.beginPath();
+  points.forEach((pt,i)=>{ const x=xOf(pt.t),y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
 
-  // X-Labels stündlich
-  ctx.fillStyle = css('--muted','#aaa');
-  ctx.font = '12px -apple-system,system-ui';
-  for(let t=tMin; t<=tMax; t+=3600000){
-    const x = xOf(t);
-    const lab = new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    ctx.fillText(lab, x-14, H-8);
-    ctx.beginPath(); ctx.strokeStyle = css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
-  }
+  // X-Labels
+  ctx.fillStyle = css('--muted','#aaa'); ctx.font='12px -apple-system,system-ui';
+  for(let t=tMin;t<=tMax;t+=3600000){ const x=xOf(t); const lab=new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}); ctx.fillText(lab,x-14,H-8);
+    ctx.beginPath(); ctx.strokeStyle=css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke(); }
 
   // Y-Labels
-  ctx.textAlign='right'; ctx.fillStyle = css('--muted','#aaa');
-  for(let p=0; p<=maxP; p+=0.2){ const y=yOf(p); ctx.fillText(p.toFixed(1).replace('.',','), PADL-6, y+4); }
+  ctx.textAlign='right'; ctx.fillStyle=css('--muted','#aaa');
+  for(let p=0;p<=maxP;p+=0.2){ const y=yOf(p); ctx.fillText(p.toFixed(1).replace('.',','),PADL-6,y+4); }
 }
 
 /* ---------- Simulationstabelle ---------- */
 function updateSimTable(){
   const tbody = document.querySelector('#simTable tbody');
-  tbody.innerHTML = '';
-  const arr = includePlan() ? drinks.concat(plans) : drinks;
-  const start = Date.now();
-  const end = start + 3*3600e3;
-  for(let t = start; t <= end; t += 10*60000){
-    const tr = document.createElement('tr');
-    const td1 = document.createElement('td');
-    const td2 = document.createElement('td');
-    td1.textContent = new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    td2.textContent = NF.format(promilleAt(t, arr)) + '‰';
-    tr.appendChild(td1); tr.appendChild(td2);
-    tbody.appendChild(tr);
+  tbody.innerHTML='';
+  const arr = includePlan()? drinks.concat(plans) : drinks;
+  const start=Date.now(), end=start+3*3600e3;
+  for(let t=start; t<=end; t+=10*60000){
+    const tr=document.createElement('tr');
+    const td1=document.createElement('td'), td2=document.createElement('td');
+    td1.textContent=new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    td2.textContent=NF.format(promilleAt(t,arr))+'‰';
+    tr.appendChild(td1); tr.appendChild(td2); tbody.appendChild(tr);
   }
 }
 
 /* ---------- Plan-UI ---------- */
-const planTyp = document.getElementById('planTyp');
-const planMenge = document.getElementById('planMenge');
-const planStartMin = document.getElementById('planStartMin');
-const planDauerMin = document.getElementById('planDauerMin');
+const planTyp=document.getElementById('planTyp');
+const planMenge=document.getElementById('planMenge');
+const planStartMin=document.getElementById('planStartMin');
+const planDauerMin=document.getElementById('planDauerMin');
 
 function fillPlanMengen(){
   fillMengen(planTyp, planMenge);
-  // Dauer passend setzen
-  const t = planTyp.value, s = planMenge.value;
-  planDauerMin.value = (DEFAULT_DAUER_MIN[t] && DEFAULT_DAUER_MIN[t][s]) || 30;
+  const t=planTyp.value,s=planMenge.value;
+  planDauerMin.value=(DEFAULT_DAUER_MIN[t]&&DEFAULT_DAUER_MIN[t][s])||30;
 }
-planTyp.onchange = ()=>{ fillPlanMengen(); };
-planMenge.onchange = ()=>{ const t=planTyp.value, s=planMenge.value; planDauerMin.value = (DEFAULT_DAUER_MIN[t] && DEFAULT_DAUER_MIN[t][s]) || 30; };
+planTyp.onchange=()=>{ fillPlanMengen(); };
+planMenge.onchange=()=>{ const t=planTyp.value,s=planMenge.value; planDauerMin.value=(DEFAULT_DAUER_MIN[t]&&DEFAULT_DAUER_MIN[t][s])||30; };
 
-document.getElementById('planAdd').onclick = ()=>{
-  const ty = planTyp.value;
-  const s = parseFloat(planMenge.value);
-  const start = Date.now() + Math.max(0, (+planStartMin.value||0))*60000;
-  const dur = Math.max(1, (+planDauerMin.value||30));
-  const grams = alkoholGramm(ty, s);
-  plans.push({ ty, s, g: grams, tStart: start, tEnd: start + dur*60000 });
+document.getElementById('planAdd').onclick=()=>{
+  const ty=planTyp.value, s=parseFloat(planMenge.value);
+  const start=Date.now()+Math.max(0,(+planStartMin.value||0))*60000;
+  const dur=Math.max(1,(+planDauerMin.value||30));
+  const grams=alkoholGramm(ty,s);
+  plans.push({ ty, s, g:grams, tStart:start, tEnd:start+dur*60000 });
   renderPlanList(); updateUI();
 };
-
-document.getElementById('planClear').onclick = ()=>{ plans = []; renderPlanList(); updateUI(); };
-document.getElementById('planInclude').onchange = ()=>{ updateUI(); };
+document.getElementById('planClear').onclick=()=>{ plans=[]; renderPlanList(); updateUI(); };
+document.getElementById('planInclude').onchange=()=>{ updateUI(); };
 
 function renderPlanList(){
-  const box = document.getElementById('planList');
-  const empty = document.getElementById('planEmpty');
+  const box=document.getElementById('planList'), empty=document.getElementById('planEmpty');
   box.querySelectorAll('.entry').forEach(e=>e.remove());
   if(!plans.length){ empty.style.display='block'; return; }
   empty.style.display='none';
   plans.forEach((p,i)=>{
-    const name = p.ty==='shot' ? (p.s===0.04?'Shot 4 cl':'Shot 2 cl') : `${(p.s).toFixed(1).replace('.',',')} L ${p.ty==='bier'?'Bier':'Radler'}`;
-    const st = new Date(p.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    const du = Math.round((p.tEnd - p.tStart)/60000);
-    const row = document.createElement('div'); row.className='entry';
-    row.innerHTML = `<span>📅 ${st} · ${name} · ${du} min</span><button class="ghost" data-del="${i}">×</button>`;
+    const name=p.ty==='shot'?(p.s===0.04?'Shot 4 cl':'Shot 2 cl'):`${(p.s).toFixed(1).replace('.',',')} L ${p.ty==='bier'?'Bier':'Radler'}`;
+    const st=new Date(p.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    const du=Math.round((p.tEnd-p.tStart)/60000);
+    const row=document.createElement('div'); row.className='entry';
+    row.innerHTML=`<span>📅 ${st} · ${name} · ${du} min</span><button class="ghost" data-del="${i}">×</button>`;
     box.appendChild(row);
   });
   box.querySelectorAll('button[data-del]').forEach(btn=>{
-    btn.onclick = ()=>{ plans.splice(+btn.dataset.del,1); renderPlanList(); updateUI(); };
+    btn.onclick=()=>{ plans.splice(+btn.dataset.del,1); renderPlanList(); updateUI(); };
   });
 }
 
@@ -399,46 +360,38 @@ function updateUI(){
   document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
   if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
   else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
-  updateList();
-  drawChart();
-  updateSimTable();
+  updateList(); drawChart(); updateSimTable();
 }
 
-/* ---------- Events (Jetzt-Drinks, Gewicht, Buttons) ---------- */
+/* ---------- Events ---------- */
 function addDrink(){
-  const typ = typSel.value;
-  const s = parseFloat(mengeSel.value);
-  const grams = alkoholGramm(typ, s);
-  const now = Date.now();
-  const dminMap = DEFAULT_DAUER_MIN[typ] || {};
-  const durMin = dminMap[String(s)] || (typ==='shot'?6:45);
-  drinks.push({ ty: typ, s, g: grams, tStart: now, tEnd: now + durMin*60000 });
-  store.save();
-  updateUI();
+  const typ=typSel.value, s=parseFloat(mengeSel.value);
+  const grams=alkoholGramm(typ,s);
+  const now=Date.now();
+  const dminMap=DEFAULT_DAUER_MIN[typ]||{};
+  const durMin=dminMap[String(s)]||(typ==='shot'?6:45);
+  drinks.push({ ty:typ, s, g:grams, tStart:now, tEnd:now+durMin*60000 });
+  store.save(); updateUI();
 }
-function resetAll(){
-  if(confirm('Alles löschen?')){
-    drinks = []; store.save(); updateUI();
-  }
-}
+function resetAll(){ if(confirm('Alles löschen?')){ drinks=[]; store.save(); updateUI(); } }
 function bind(){
-  // "Jetzt" Mengen
-  fillMengen(typSel, mengeSel); setDauerHint();
-  typSel.onchange = ()=>{ fillMengen(typSel, mengeSel); setDauerHint(); updateUI(); };
-  mengeSel.onchange = ()=> setDauerHint();
+  // Jetzt
+  fillMengen(typSel,mengeSel); setDauerHint();
+  typSel.onchange=()=>{ fillMengen(typSel,mengeSel); setDauerHint(); updateUI(); };
+  mengeSel.onchange=()=> setDauerHint();
 
-  // Plan Mengen
+  // Plan
   fillPlanMengen();
 
   // Gewicht
-  const gEl = document.getElementById('gewicht');
-  gEl.value = store.gewicht;
-  gEl.addEventListener('change', ()=>{ store.gewicht = Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
+  const gEl=document.getElementById('gewicht');
+  gEl.value=store.gewicht;
+  gEl.addEventListener('change',()=>{ store.gewicht=Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
 
   // Buttons
-  document.getElementById('add').onclick = addDrink;
-  document.getElementById('reset').onclick = resetAll;
-  document.getElementById('update').onclick = updateUI;
+  document.getElementById('add').onclick=addDrink;
+  document.getElementById('reset').onclick=resetAll;
+  document.getElementById('update').onclick=updateUI;
 
   // Auto-Update alle 2 Minuten
   setInterval(updateUI, 2*60*1000);
@@ -447,9 +400,9 @@ function bind(){
 /* ---------- Start ---------- */
 store.load(); bind(); updateUI();
 
-// PWA: Service Worker registrieren (optional; für GitHub Pages ok)
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
+// PWA: optional
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{ navigator.serviceWorker.register('./sw.js').catch(()=>{}); });
 }
 </script>
 </body>
