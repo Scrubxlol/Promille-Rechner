@@ -143,7 +143,7 @@
 
 <script>
 /* ---------- Parameter ---------- */
-const ABBAU = 0.12;                 // ‰ pro Stunde (etwas konservativer als 0.13)
+const ABBAU = 0.12;                 // ‰ pro Stunde (Null-Ordnung)
 const R = 0.68;                     // Verteilungsfaktor
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
 const DEFAULT_DAUER_MIN = {
@@ -151,6 +151,7 @@ const DEFAULT_DAUER_MIN = {
   radler:{ "0.3":20, "0.4":28, "0.5":36 },
   shot:  { "0.02":5,  "0.04":8  }
 };
+const F_IMMEDIATE = 0.70;           // 70% sofort, 30% über Dauer
 
 /* ---------- State + Storage ---------- */
 let drinks = []; // { ty, s(L), g, tStart(ms), tEnd(ms) }
@@ -166,51 +167,60 @@ const store = {
   save(){ localStorage.setItem('pr_drinks', JSON.stringify(drinks)); }
 };
 
-/* ---------- Helpers ---------- */
+/* ---------- Alkohol & Planung ---------- */
 function alkoholGramm(typ, liter){
   let vol = 0.05; if(typ==='radler') vol=0.025; if(typ==='shot') vol=0.40;
   return liter * vol * 0.8 * 1000; // Gramm reiner Alkohol
 }
 
-// Hybrid-Aufnahme: 70% sofort, 30% über genau (tEnd - tStart) Minuten
-function bacContributionAt(t, drink, gewicht){
-  const fImmediate = 0.70;                        // sowohl für Bier/Radler als auch Shot
-  const g0 = drink.g * fImmediate;                // sofort
-  const gS = drink.g - g0;                        // langsam
-  const start = drink.tStart;
-  const slowMinutes = Math.max(1, Math.ceil((drink.tEnd - drink.tStart)/60000));
+function buildSchedule(allDrinks){
+  const sched = new Map(); // minute -> Gramm
+  if(!allDrinks.length) return {sched, minMin: Math.floor(Date.now()/60000), maxMin: Math.floor(Date.now()/60000)};
+  let minMin = Infinity, maxMin = -Infinity;
+  for(const d of allDrinks){
+    const startMin = Math.floor(d.tStart/60000);
+    const endMin   = Math.max(startMin+1, Math.ceil(d.tEnd/60000));
+    if(startMin < minMin) minMin = startMin;
+    if(endMin   > maxMin) maxMin = endMin;
+    const g0 = d.g * F_IMMEDIATE;
+    const gS = d.g - g0;
 
+    // sofort am Start-Minute
+    sched.set(startMin, (sched.get(startMin)||0) + g0);
+
+    // Rest gleichmäßig über die tatsächliche Dauer
+    const slowMinutes = Math.max(1, endMin - startMin);
+    const perMin = gS / slowMinutes;
+    for(let m = 0; m < slowMinutes; m++){
+      const ts = startMin + m;
+      sched.set(ts, (sched.get(ts)||0) + perMin);
+    }
+  }
+  return {sched, minMin, maxMin};
+}
+
+// Null-Ordnung: pro Minute BAC(t+1) = max(0, BAC(t) + intake/(Gewicht*R) - ABBAU/60)
+function integrateSeries(allDrinks, endMs, gewicht){
+  const {sched, minMin} = buildSchedule(allDrinks);
+  const endMin = Math.floor(endMs/60000);
   let bac = 0;
-
-  // Sofort-Anteil (als "eine Minute" zum Start)
-  if (t >= start) {
-    const z0 = g0 / (gewicht * R);
-    const hours = (t - start) / 3600000;
-    bac += Math.max(0, z0 - ABBAU * hours);
+  const series = new Map(); // minute -> BAC
+  for(let m = minMin; m <= endMin; m++){
+    const grams = sched.get(m) || 0;
+    bac = Math.max(0, bac + grams/(gewicht*R) - ABBAU/60);
+    series.set(m, bac);
   }
-
-  // Langsam-Anteil: gleichmäßig pro Minute über slowMinutes
-  const perMin = gS / slowMinutes;
-  for (let i=0; i<slowMinutes; i++){
-    const ts = start + i*60000;
-    if (t < ts) continue;
-    const z = perMin / (gewicht * R);
-    const hours = (t - ts) / 3600000;
-    bac += Math.max(0, z - ABBAU * hours);
-  }
-  return bac;
+  return {startMin: minMin, endMin, series};
 }
 
-function promilleAt(t, arr){
-  const gw = +document.getElementById('gewicht').value || 70;
-  let sum = 0; for(const d of arr){ sum += bacContributionAt(t, d, gw); }
-  return sum;
-}
-function includePlan(){ return document.getElementById('planInclude')?.checked; }
-function promilleJetzt(){
+function promilleJetztValue(){
   const arr = includePlan()? drinks.concat(plans) : drinks;
-  return promilleAt(Date.now(), arr);
+  const gw = +document.getElementById('gewicht').value || 70;
+  const {endMin, series} = integrateSeries(arr, Date.now(), gw);
+  return series.get(endMin) || 0;
 }
+
+function includePlan(){ return document.getElementById('planInclude')?.checked; }
 
 /* ---------- UI: Jetzt-Drinks ---------- */
 const typSel = document.getElementById('typ');
@@ -267,9 +277,17 @@ function drawChart(){
   const css = (n,f) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || f;
 
   const arr = includePlan()? drinks.concat(plans) : drinks;
+  const gw = +document.getElementById('gewicht').value || 70;
+  // Integriere bis tMax, dann lese Werte für jeden Minute
+  const {startMin, endMin, series} = integrateSeries(arr, tMax, gw);
 
-  // alle 2 Minuten sampeln
-  const points=[]; for(let t=tMin; t<=tMax; t+=2*60000){ points.push({t, p: promilleAt(t,arr)}); }
+  // Punkte alle 2 Minuten ab jetzt
+  const points=[];
+  for(let ms = tMin; ms <= tMax; ms += 2*60000){
+    const m = Math.floor(ms/60000);
+    const p = series.get(m) ?? 0;
+    points.push({t:ms, p});
+  }
 
   const maxP=Math.max(0.8,...points.map(p=>p.p))*1.2 || 1;
   const yOf = p => (H-PADB) - (H-PADT-PADB)*(p/maxP);
@@ -290,8 +308,11 @@ function drawChart(){
 
   // X-Labels
   ctx.fillStyle = css('--muted','#aaa'); ctx.font='12px -apple-system,system-ui';
-  for(let t=tMin;t<=tMax;t+=3600000){ const x=xOf(t); const lab=new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}); ctx.fillText(lab,x-14,H-8);
-    ctx.beginPath(); ctx.strokeStyle=css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke(); }
+  for(let ms=tMin; ms<=tMax; ms+=3600000){
+    const x=xOf(ms); const lab=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    ctx.fillText(lab,x-14,H-8);
+    ctx.beginPath(); ctx.strokeStyle=css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
+  }
 
   // Y-Labels
   ctx.textAlign='right'; ctx.fillStyle=css('--muted','#aaa');
@@ -303,12 +324,16 @@ function updateSimTable(){
   const tbody = document.querySelector('#simTable tbody');
   tbody.innerHTML='';
   const arr = includePlan()? drinks.concat(plans) : drinks;
+  const gw = +document.getElementById('gewicht').value || 70;
   const start=Date.now(), end=start+3*3600e3;
-  for(let t=start; t<=end; t+=10*60000){
+
+  const {series} = integrateSeries(arr, end, gw);
+  for(let ms=start; ms<=end; ms+=10*60000){
+    const m=Math.floor(ms/60000);
     const tr=document.createElement('tr');
     const td1=document.createElement('td'), td2=document.createElement('td');
-    td1.textContent=new Date(t).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
-    td2.textContent=NF.format(promilleAt(t,arr))+'‰';
+    td1.textContent=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    td2.textContent=NF.format(series.get(m)||0)+'‰';
     tr.appendChild(td1); tr.appendChild(td2); tbody.appendChild(tr);
   }
 }
@@ -358,7 +383,7 @@ function renderPlanList(){
 
 /* ---------- Update-Kaskade ---------- */
 function updateUI(){
-  const p = promilleJetzt();
+  const p = promilleJetztValue();
   document.getElementById('anzeige').textContent = 'Aktuelle Promille: ' + NF.format(p) + '‰';
   if(p >= 0.8){ document.body.classList.add('danger'); document.getElementById('warn').style.display='block'; }
   else { document.body.classList.remove('danger'); document.getElementById('warn').style.display='none'; }
