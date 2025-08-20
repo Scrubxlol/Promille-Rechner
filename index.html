@@ -13,18 +13,27 @@
   <link rel="icon" type="image/png" sizes="192x192" href="beer-icon.png">
 
   <meta name="theme-color" content="#0a84ff">
+
   <style>
+    /* ---- Theme Variablen (Dark Default) ---- */
     :root{
       --bg:#0b0b0b;--card:#151515;--text:#f2f2f2;--muted:#aaa;
-      --primary:#0a84ff;--danger:#b00020;--radius:14px;
-      --grid:#444;--axis:#888;--curve:#4dd0e1;--warn:#ff5252;--tableRow:#1e1e1e
+      --primary:#0a84ff;--danger:#d32f2f;--success:#2e7d32;--radius:14px;
+      --grid:#333;--axis:#8c8c8c;--curve:#4dd0e1;--warn:#ff5252;--tableRow:#1e1e1e
     }
+    /* Optional: wenn NICHT Standalone und System ist hell → Light Mode */
     @media (prefers-color-scheme: light){
       :root{
         --bg:#f7f7f7;--card:#ffffff;--text:#111;--muted:#666;
         --grid:#eee;--axis:#666;--curve:#0a84ff;--warn:#ff3333;--tableRow:#f2f2f2
       }
     }
+    /* iOS PWA/Standalone: Dark erzwingen */
+    body.force-dark{
+      --bg:#0b0b0b;--card:#151515;--text:#f2f2f2;--muted:#aaa;
+      --grid:#333;--axis:#8c8c8c;--curve:#4dd0e1;--tableRow:#1e1e1e
+    }
+
     html,body{height:100%}
     body{
       margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
@@ -37,15 +46,20 @@
     .row{display:flex;flex-wrap:wrap;gap:8px}
     label{display:inline-flex;align-items:center;gap:6px;margin:6px 8px 6px 0}
     input,select,button{font-size:1rem;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:#111;color:var(--text)}
-    @media (prefers-color-scheme: light){input,select,button{background:#fff;color:var(--text);border:1px solid rgba(0,0,0,.18)}}
-    button{background:var(--primary);color:#fff;border:none;min-height:44px}
-    button.ghost{background:transparent;color:var(--text);border:1px solid rgba(255,255,255,.2)}
+    @media (prefers-color-scheme: light){
+      input,select,button{background:#fff;color:var(--text);border:1px solid rgba(0,0,0,.18)}
+    }
+    button{min-height:44px;cursor:pointer}
+    .btn{background:var(--primary);color:#fff;border:none}
+    .btn-ghost{background:transparent;color:var(--text);border:1px solid rgba(255,255,255,.2)}
+    .btn-danger{background:var(--danger);color:#fff;border:none}
+    .btn-success{background:var(--success);color:#fff;border:none}
     .prom{font-size:1.8rem;font-weight:700;margin:10px 4px 6px}
     .muted{color:var(--muted)}
     .entry{margin-bottom:6px}
     #warn{display:none;background:rgba(255,0,0,.9);color:#fff;padding:12px;border-radius:12px;margin-bottom:12px;text-align:center;font-weight:700}
-    body.danger{background:var(--danger)!important;color:#fff}
-    canvas{width:100%;height:240px;display:block;border-radius:12px;background:var(--card)}
+    body.danger{background:#8b1c1c!important;color:#fff}
+    canvas{width:100%;height:260px;display:block;border-radius:12px;background:var(--card)}
     .actions{display:flex;gap:8px;flex-wrap:wrap}
     table{width:100%;border-collapse:collapse;margin-top:8px}
     th,td{padding:10px;border-bottom:1px solid rgba(255,255,255,.08)}
@@ -112,9 +126,9 @@
       </label>
     </div>
     <div class="actions">
-      <button id="add">Jetzt getrunken</button>
-      <button id="update" class="ghost" aria-label="Manuell aktualisieren">🔄 Aktualisieren</button>
-      <button id="reset" class="ghost" aria-label="Alle Einträge löschen">Alles löschen</button>
+      <button id="add" class="btn">Jetzt getrunken</button>
+      <button id="update" class="btn-success" aria-label="Manuell aktualisieren">🔄 Aktualisieren</button>
+      <button id="reset" class="btn-danger" aria-label="Alle Einträge löschen">✖️ Alles löschen</button>
     </div>
     <div class="muted" id="dauerHinweis" style="margin-top:8px"></div>
   </div>
@@ -163,12 +177,12 @@
       <label>Dauer:
         <input type="number" id="planDauerMin" value="30" step="5" min="1" style="width:90px"> min
       </label>
-      <button id="planAdd">Zum Plan</button>
+      <button id="planAdd" class="btn">Zum Plan</button>
     </div>
 
     <div class="actions" style="margin-top:8px">
       <label><input type="checkbox" id="planInclude" checked> Plan in Grafik & Tabelle berücksichtigen</label>
-      <button id="planClear" class="ghost">Plan leeren</button>
+      <button id="planClear" class="btn-ghost">Plan leeren</button>
     </div>
 
     <div class="plan-list" id="planList" style="margin-top:8px">
@@ -189,7 +203,7 @@ const ABBAU = 0.12;                 // ‰ pro Stunde (Null-Ordnung)
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
 const DEFAULT_DAUER_MIN = {
   bier:  { "0.3":25, "0.4":35, "0.5":45 },
-  radler:{ "0.3":20, "0.4":28, "0.5":36 },
+  radler:{ "0.3":25, "0.4":35, "0.5":45 }, // <-- Radler wie Bier
   shot:  { "0.02":5,  "0.04":8  }
 };
 const F_IMMEDIATE = 0.70;           // 70% sofort, 30% langsam
@@ -197,16 +211,6 @@ const F_IMMEDIATE = 0.70;           // 70% sofort, 30% langsam
 /* ---------- State + Storage ---------- */
 let drinks = []; // { ty, s(L), g, tStart(ms), tEnd(ms) }
 let plans  = [];
-
-const store = {
-  get gewicht(){ return +(localStorage.getItem('pr_weight')||70); },
-  set gewicht(v){ localStorage.setItem('pr_weight', String(v)); },
-  load(){
-    try{ drinks = JSON.parse(localStorage.getItem('pr_drinks')||'[]'); }
-    catch{ drinks = []; }
-  },
-  save(){ localStorage.setItem('pr_drinks', JSON.stringify(drinks)); }
-};
 
 /* ---------- Personalisierung ---------- */
 function getR(){
@@ -216,7 +220,6 @@ function getR(){
 
 /* ---------- Alkohol & Aufnahme ---------- */
 function alkoholGramm(typ, liter){
-  // 0.789 g/ml (genauer)
   let vol = 0.05; if(typ==='radler') vol=0.025; if(typ==='shot') vol=0.40;
   return liter * vol * 0.789 * 1000; // Gramm reiner Alkohol
 }
@@ -318,25 +321,25 @@ function updateList(){
     const du = Math.round((d.tEnd - d.tStart)/60000);
     const div = document.createElement('div'); div.className='entry';
     const name = d.ty==='shot' ? (d.s===0.04?'Shot 4 cl':'Shot 2 cl') : `${(d.s).toFixed(1).replace('.',',')} L ${d.ty==='bier'?'Bier':'Radler'}`;
-    div.innerHTML = `🕒 ${st} · ${name} · ${du} min <button class="ghost" data-del="${i}" aria-label="Eintrag löschen">×</button>`;
+    div.innerHTML = `🕒 ${st} · ${name} · ${du} min <button class="btn-ghost" data-del="${i}" aria-label="Eintrag löschen">×</button>`;
     log.appendChild(div);
   });
   log.querySelectorAll('button[data-del]').forEach(btn=>{
-    btn.onclick = () => { drinks.splice(+btn.dataset.del,1); store.save(); updateUI(); };
+    btn.onclick = () => { drinks.splice(+btn.dataset.del,1); updateList(); localStorage.setItem('pr_drinks', JSON.stringify(drinks)); updateUI(); };
   });
 }
 
-/* ---------- Graph ---------- */
+/* ---------- Graph (schöner: Gradient, runde Linie) ---------- */
 function drawChart(){
   const cvs = document.getElementById('chart');
   const ctx = cvs.getContext('2d');
 
   const dpr = Math.max(1, window.devicePixelRatio || 1);
-  const cssW = cvs.clientWidth || 800, cssH = 240;
+  const cssW = cvs.clientWidth || 800, cssH = 260;
   cvs.width = Math.round(cssW*dpr); cvs.height = Math.round(cssH*dpr);
   ctx.setTransform(1,0,0,1,0,0); ctx.scale(dpr,dpr);
 
-  const W=cssW,H=cssH, PADL=44,PADB=28,PADT=16,PADR=10;
+  const W=cssW,H=cssH, PADL=44,PADB=32,PADT=18,PADR=12;
   ctx.clearRect(0,0,W,H);
 
   const now=Date.now(), tMin=now, tMax=now+6*3600e3;
@@ -357,27 +360,41 @@ function drawChart(){
   const maxP=Math.max(0.8,...points.map(p=>p.p))*1.2 || 1;
   const yOf = p => (H-PADB) - (H-PADT-PADB)*(p/maxP);
 
-  // Grid + Achsen
-  ctx.strokeStyle = css('--grid','#444'); ctx.lineWidth=1;
+  // Grid
+  ctx.strokeStyle = css('--grid','#333'); ctx.lineWidth=1;
   for(let p=0;p<=maxP;p+=0.2){ const y=yOf(p); ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(W-PADR,y); ctx.stroke(); }
-  ctx.strokeStyle = css('--axis','#888');
+
+  // Achsen
+  ctx.strokeStyle = css('--axis','#8c8c8c');
   ctx.beginPath(); ctx.moveTo(PADL,H-PADB); ctx.lineTo(W-PADR,H-PADB); ctx.lineTo(W-PADR,PADT); ctx.stroke();
 
   // 0.8‰ Linie
-  ctx.strokeStyle = css('--warn','#ff5252'); ctx.setLineDash([4,4]);
+  ctx.strokeStyle = css('--warn','#ff5252'); ctx.setLineDash([5,5]);
   const yWarn=yOf(0.8); ctx.beginPath(); ctx.moveTo(PADL,yWarn); ctx.lineTo(W-PADR,yWarn); ctx.stroke(); ctx.setLineDash([]);
 
+  // Gradient für Fläche unter Kurve
+  const grad = ctx.createLinearGradient(0, PADT, 0, H-PADB);
+  grad.addColorStop(0, 'rgba(77,208,225,0.35)');
+  grad.addColorStop(1, 'rgba(77,208,225,0.00)');
+
   // Kurve
-  ctx.strokeStyle = css('--curve','#4dd0e1'); ctx.lineWidth=2; ctx.beginPath();
-  points.forEach((pt,i)=>{ const x=xOf(pt.t),y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }); ctx.stroke();
+  ctx.lineWidth=2.5; ctx.lineCap='round'; ctx.strokeStyle=css('--curve','#4dd0e1');
+  ctx.beginPath();
+  points.forEach((pt,i)=>{ const x=xOf(pt.t),y=yOf(pt.p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.stroke();
+
+  // Fläche füllen
+  ctx.lineTo(xOf(tMax), H-PADB);
+  ctx.lineTo(xOf(tMin), H-PADB);
+  ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
 
   // X-Labels
   ctx.fillStyle = css('--muted','#aaa'); ctx.font='12px -apple-system,system-ui';
   for(let ms=tMin; ms<=tMax; ms+=3600000){
-    const x=xOf(ms);
-    const lab=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
+    const x=xOf(ms); const lab=new Date(ms).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
     ctx.fillText(lab,x-14,H-8);
-    ctx.beginPath(); ctx.strokeStyle=css('--grid','#444'); ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
+    ctx.beginPath(); ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.moveTo(x,H-PADB); ctx.lineTo(x,PADT); ctx.stroke();
   }
 
   // Y-Labels
@@ -440,7 +457,7 @@ function renderPlanList(){
     const st=new Date(p.tStart).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'});
     const du=Math.round((p.tEnd-p.tStart)/60000);
     const row=document.createElement('div'); row.className='entry';
-    row.innerHTML=`<span>📅 ${st} · ${name} · ${du} min</span><button class="ghost" data-del="${i}">×</button>`;
+    row.innerHTML=`<span>📅 ${st} · ${name} · ${du} min</span><button class="btn-ghost" data-del="${i}">×</button>`;
     box.appendChild(row);
   });
   box.querySelectorAll('button[data-del]').forEach(btn=>{
@@ -466,10 +483,19 @@ function addDrink(){
   const dminMap=DEFAULT_DAUER_MIN[typ]||{};
   const durMin=dminMap[String(s)]||(typ==='shot'?6:45);
   drinks.push({ ty:typ, s, g:grams, tStart:now, tEnd:now+durMin*60000 });
-  store.save(); updateUI();
+  localStorage.setItem('pr_drinks', JSON.stringify(drinks));
+  updateUI();
 }
-function resetAll(){ if(confirm('Alles löschen?')){ drinks=[]; store.save(); updateUI(); } }
+function resetAll(){
+  if(confirm('Alles löschen?')){
+    drinks=[]; localStorage.setItem('pr_drinks','[]'); updateUI();
+  }
+}
 function bind(){
+  // Dark-Force im Standalone (iOS/Android PWA)
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  if(isStandalone) document.body.classList.add('force-dark');
+
   // Jetzt
   fillMengen(typSel,mengeSel); setDauerHint();
   typSel.onchange=()=>{ fillMengen(typSel,mengeSel); setDauerHint(); updateUI(); };
@@ -479,8 +505,10 @@ function bind(){
   fillPlanMengen();
 
   // Gewicht + Geschlecht
-  const gEl=document.getElementById('gewicht'); gEl.value=store.gewicht;
-  gEl.addEventListener('change',()=>{ store.gewicht=Math.max(40,Math.min(200,+gEl.value||70)); updateUI(); });
+  const gEl=document.getElementById('gewicht'); 
+  const stored = +(localStorage.getItem('pr_weight')||70);
+  gEl.value=stored;
+  gEl.addEventListener('change',()=>{ localStorage.setItem('pr_weight', String(Math.max(40,Math.min(200,+gEl.value||70)))); updateUI(); });
   document.getElementById('sex').addEventListener('change', updateUI);
 
   // Buttons
@@ -504,7 +532,10 @@ function bind(){
 }
 
 /* ---------- Start ---------- */
-store.load(); bind(); updateUI();
+(function init(){
+  try{ drinks = JSON.parse(localStorage.getItem('pr_drinks')||'[]'); }catch{ drinks=[]; }
+  bind(); updateUI();
+})();
 
 // PWA: optional
 if('serviceWorker' in navigator){
