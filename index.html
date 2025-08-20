@@ -143,7 +143,7 @@
 
 <script>
 /* ---------- Parameter ---------- */
-const ABBAU = 0.13;                 // ‰ pro Stunde
+const ABBAU = 0.12;                 // ‰ pro Stunde (etwas konservativer als 0.13)
 const R = 0.68;                     // Verteilungsfaktor
 const NF = new Intl.NumberFormat('de-DE',{minimumFractionDigits:3,maximumFractionDigits:3});
 const DEFAULT_DAUER_MIN = {
@@ -172,14 +172,13 @@ function alkoholGramm(typ, liter){
   return liter * vol * 0.8 * 1000; // Gramm reiner Alkohol
 }
 
-// Hybrid-Aufnahme: 60/40 (Bier/Radler), 70/30 (Shot)
-// WICHTIG: langsamer Anteil wird über GENAU (tEnd - tStart) Minuten verteilt!
+// Hybrid-Aufnahme: 70% sofort, 30% über genau (tEnd - tStart) Minuten
 function bacContributionAt(t, drink, gewicht){
-  const fImmediate = (drink.ty==='shot') ? 0.70 : 0.60;
-  const g0 = drink.g * fImmediate;           // sofort
-  const gS = drink.g - g0;                    // langsam
+  const fImmediate = 0.70;                        // sowohl für Bier/Radler als auch Shot
+  const g0 = drink.g * fImmediate;                // sofort
+  const gS = drink.g - g0;                        // langsam
   const start = drink.tStart;
-  const slowMinutes = Math.max(1, Math.round((drink.tEnd - drink.tStart)/60000));
+  const slowMinutes = Math.max(1, Math.ceil((drink.tEnd - drink.tStart)/60000));
 
   let bac = 0;
 
@@ -208,7 +207,10 @@ function promilleAt(t, arr){
   return sum;
 }
 function includePlan(){ return document.getElementById('planInclude')?.checked; }
-function promilleJetzt(){ const arr = includePlan()? drinks.concat(plans) : drinks; return promilleAt(Date.now(), arr); }
+function promilleJetzt(){
+  const arr = includePlan()? drinks.concat(plans) : drinks;
+  return promilleAt(Date.now(), arr);
+}
 
 /* ---------- UI: Jetzt-Drinks ---------- */
 const typSel = document.getElementById('typ');
@@ -266,7 +268,7 @@ function drawChart(){
 
   const arr = includePlan()? drinks.concat(plans) : drinks;
 
-  // alle 2 Minuten sampeln (früher Anstieg sichtbar)
+  // alle 2 Minuten sampeln
   const points=[]; for(let t=tMin; t<=tMax; t+=2*60000){ points.push({t, p: promilleAt(t,arr)}); }
 
   const maxP=Math.max(0.8,...points.map(p=>p.p))*1.2 || 1;
